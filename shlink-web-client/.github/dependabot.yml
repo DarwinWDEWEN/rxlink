@@ -1,0 +1,52 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: saturday
+      time: '09:00'
+      timezone: 'Europe/Madrid'
+    open-pull-requests-limit: 10
+    groups:
+      fontawesome:
+        patterns:
+          - '@fortawesome/*'
+      coding-styles:
+        patterns:
+          - '@shlinkio/eslint-config-js-coding-standard'
+          - 'oxfmt'
+          - 'oxlint'
+          - 'oxlint-tsgolint'
+      shlink:
+        patterns:
+          - '@shlinkio/*'
+      react:
+        patterns:
+          - 'react'
+          - 'react-dom'
+          - '@types/react'
+          - '@types/react-dom'
+      vite:
+        patterns:
+          - 'vite'
+          - '@vitejs/*'
+      vitest:
+        patterns:
+          - 'vitest'
+          - 'vitest-browser-react'
+          - '@vitest/*'
+      workbox:
+        patterns:
+          - 'workbox*'
+      tailwindcss:
+        patterns:
+          - 'tailwindcss'
+          - '@tailwindcss/*'
+  - package-ecosystem: docker
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: saturday
+      time: '09:00'
+      timezone: 'Europe/Madrid'

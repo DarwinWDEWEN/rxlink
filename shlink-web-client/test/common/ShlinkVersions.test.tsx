@@ -1,0 +1,50 @@
+import { fromPartial } from '@total-typescript/shoehorn';
+import type { ShlinkVersionsProps } from '../../src/common/ShlinkVersions';
+import { ShlinkVersions } from '../../src/common/ShlinkVersions';
+import type { NonReachableServer, NotFoundServer, ReachableServer } from '../../src/servers/data';
+import { checkAccessibility } from '../__helpers__/accessibility';
+import { render } from '../__helpers__/setUpTest.tsx';
+
+describe('<ShlinkVersions />', () => {
+  const setUp = (props: ShlinkVersionsProps) => render(<ShlinkVersions {...props} />);
+
+  it('passes a11y checks', () =>
+    checkAccessibility(setUp({ selectedServer: fromPartial({ version: '1.0.0', printableVersion: '1.0.0' }) })));
+
+  it.each([
+    ['1.2.3', fromPartial<ReachableServer>({ version: '1.0.0', printableVersion: 'foo' }), 'v1.2.3', 'foo'],
+    ['foo', fromPartial<ReachableServer>({ version: '1.0.0', printableVersion: '1.2.3' }), 'latest', '1.2.3'],
+    ['latest', fromPartial<ReachableServer>({ version: '1.0.0', printableVersion: 'latest' }), 'latest', 'latest'],
+    ['5.5.0', fromPartial<ReachableServer>({ version: '1.0.0', printableVersion: '0.2.8' }), 'v5.5.0', '0.2.8'],
+    ['not-semver', fromPartial<ReachableServer>({ version: '1.0.0', printableVersion: 'some' }), 'latest', 'some'],
+  ])(
+    'displays expected versions when selected server is reachable',
+    async (clientVersion, selectedServer, expectedClientVersion, expectedServerVersion) => {
+      const screen = await setUp({ clientVersion, selectedServer });
+      const [serverLink, clientLink] = screen.getByRole('link').all();
+
+      await expect
+        .element(serverLink)
+        .toHaveAttribute('href', `https://github.com/shlinkio/shlink/releases/${expectedServerVersion}`);
+      await expect.element(serverLink).toHaveTextContent(expectedServerVersion);
+      await expect
+        .element(clientLink)
+        .toHaveAttribute('href', `https://github.com/shlinkio/shlink-web-client/releases/${expectedClientVersion}`);
+      await expect.element(clientLink).toHaveTextContent(expectedClientVersion);
+    },
+  );
+
+  it.each([
+    ['1.2.3', null],
+    ['1.2.3', fromPartial<NotFoundServer>({ serverNotFound: true })],
+    ['1.2.3', fromPartial<NonReachableServer>({ serverNotReachable: true })],
+  ])('displays only client version when selected server is not reachable', async (clientVersion, selectedServer) => {
+    const screen = await setUp({ clientVersion, selectedServer });
+    const links = screen.getByRole('link').all();
+
+    expect(links).toHaveLength(1);
+    await expect
+      .element(links[0])
+      .toHaveAttribute('href', 'https://github.com/shlinkio/shlink-web-client/releases/v1.2.3');
+  });
+});

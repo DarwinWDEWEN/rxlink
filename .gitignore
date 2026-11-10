@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+supabase/functions/.env
+node_modules/
+web/dist/
+dist/
+*.local
+.DS_Store
+codegraph.db
+.codegraph/

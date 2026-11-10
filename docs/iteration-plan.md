@@ -1,0 +1,345 @@
+# rxlink 迭代开发与迁移方案（v1.0，2026-11-09）
+
+> 定位：`docs/tech-framework.md` 回答「做成什么样」，`docs/shlink-migration-analysis.md` 回答「shlink 有什么」，`docs/shlink-api-contract.md` 回答「控制台要什么字段」。这份文档回答**「按什么顺序做、每轮做到哪算完」**。
+> 用法：每轮只做本轮的「范围」，做完逐条勾【B】验收，再回【C】更新状态。**验收没勾完不算完成**，不允许把没验的项带进下一轮。
+> 所有判断都建立在已有实测之上（见 `docs/verification/p0-results.md`）；这里只引用，不重新论证。
+
+---
+
+# 【A】迭代开发文档
+
+## A0. 现状快照（2026-11-09）
+
+| 已有 | 证据 |
+|---|---|
+| 平台能力与硬限制摸清 | `docs/verification/p0-results.md`；ADB Supabase 禁 `SECURITY DEFINER`、新表默认裸奔、PG14 保守子集 |
+| 跳转层定案并上线 | `fc/redirect/index.js` + `cache.js` 跑在 FC 自定义域名 `example.com` 的 `/*`，两文件版已上线实测（I2） |
+| 两级缓存与失效链路 | `0002_link_cache_version.sql` + `0007_link_version_row_trigger.sql`（行级触发器，避免 0 行 UPDATE 也 bump） |
+| 兼容层 B1 | `0008_compat_api.sql` 五个 RPC + `supabase/functions/compat/index.ts`，控制台已能建改删查（I3） |
+| 兼容层 B2 | `0009_visits_api.sql` 五个 RPC + 8 条路由；概览/明细/筛选/删访问已与控制台联调（I4） |
+| 兼容层 B3/B4 | `0010_console_api.sql` 七个 RPC + 9 条路由；标签/域名/Mercure/跳转规则已与控制台联调（I5） |
+| 控制台静态托管 | 已上传用户 FC 函数 `console-prod` 并配证书，`https://console.example.com` 全通（I5 已验收） |
+| 死链清理方案 B | `0003_dead_link_prune.sql`，cron jobid=5，dry-run |
+| 控制台可构建 | `shlink-web-client/` v4.9.0，Node 24 下 build 通过，产物浏览器可跑 |
+| 契约摸清 | `docs/shlink-api-contract.md`（23 方法 / 18 路径）+ 原件存档 `docs/reference/shlink-sdk-3.2.1/` |
+| 404 回退 | `0011_fallback_and_scheme.sql` 的 `not_found_redirects` RPC + 跳转函数 404 分支回跳（域名级优先、占位符、双斜杠折叠）；孤儿分类对齐 shlink（收尾已验收） |
+| 地理富化设计 | `docs/geo-enrichment.md`：NAT 出网=FC 双网络（不用 NAT 网关）；事件函数 + 定时触发器 + mmdb 放 /tmp（方案 A）；IP 短暂留存（富化后清空，7 天兜底） |
+| 交接文档 | `docs/handover.md`：项目定位/架构、当前线上状态、仓库地图、跑验证命令、平台坑、凭据红线、待办（地理富化 #41–#44 + 发布前置）、工作约定 |
+
+**还没有的**：无阻塞项（I0–I6 全部验收；三个域名证书齐备；404 回退已上线；地理富化方案已定稿待实现）。交接文档已备（`docs/handover.md`）。云上待办：cdndev 域名/解析下线、FC 账号探针残留、闲置 `console` Edge 函数；发布前置：Supabase 升付费版（免费版禁生产）；地理富化前置：MaxMind License key（他申请）。
+
+**当前数据面状态**：跳转函数代码与线上均为两文件版、读正式表（I2 已验收）；控制台可连兼容层并看访问统计（I3、I4 已验收）；23 个方法全部有实现，控制台已在 `https://console.example.com` 验收（I5）；404 回退已上线（域名级/全局/占位符/双斜杠折叠实测，收尾已验收）。
+
+---
+
+## A1. 迭代设计原则（四条，决定下面的切法）
+
+1. **先纵切、后横切**：每一轮结束时，**至少有一条真实链路能从入口打到库里再回到界面**（或回到一个可验证的响应）。不做「先把所有表建完、最后一起联调」。
+2. **每轮只有一个主题**，且能让他在浏览器或 `curl` 里看到差别；看不到差别的轮次不算迭代，算内部整理。
+3. **临时态必须收敛**：探针表、单文件部署、`/tmp` 里的脚本这类临时物，在对应轮次里明确写清「哪一轮退场」，不能留到无限期。
+4. **云侧动作前置声明**：凡是需要他在阿里云控制台点的，本轮开头就列全（页签 + 下拉框名），不让代码等他，也不让他等代码。
+
+通用完成定义（每轮都适用）：
+
+- 迁移脚本按语句逐条应用到线上库，且**先备份**；
+- 新增表的 `enable/force RLS + revoke` 四行齐全（`tech-framework.md` §4.1）；
+- 本轮涉及的文档同步更新；
+- 交付物里**不出现任何密钥值**（含日志、截图、文档）。
+
+---
+
+## A2. 迭代总表
+
+| 轮 | 主题 | 一句话目标 | 前置 | 估时（我一人实现） |
+|---|---|---|---|---|
+| **I0** | 决策冻结 | 把还悬着的 4 个决策拍完，否则 I1 的 DDL 会返工 | — | 0.5 天 |
+| **I1** | 数据面正式化（0004） | 建真表 + `resolve`/`create_short_url` RPC + 权限收口，**仍不切跳转函数** | I0 | 2–3 天 |
+| **I2** | 跳转切正式表 | 函数改常量、写正式 inbox、drain + cron、prune 搬迁；两文件版上线 | I1 | 1–2 天（含他上传） |
+| **I3** | 控制台连通（B1） | `api_key` + 兼容层 health + 短链读写 5 方法 ⇒ 控制台能加服务器、能建能改能删 | I1（表就绪） | 2–3 天 |
+| **I4** | 统计读接口（B2） | 8 个访问统计方法 ⇒ 控制台能看数与删访问 | I2、I3 | 2 天 |
+| **I5** | 控制台补全（B3/B4） | 标签 4 + 域名/健康/Mercure/规则 6 ⇒ 全 23 个方法收口；控制台上线托管 | I4 | 2–3 天 |
+| **I6** | 生产硬化 | 探针全退场、prune 转真、HTTPS、告警与 runbook、压测复核 | I5 | 2–3 天 |
+
+合计约 **12–17 人日**（不含他准备备案/证书的日历时间）。**I3 与 I1 之间可以并行**：I2 不依赖兼容层，I3 不依赖跳转切开，只要 I1 的表冻结。
+
+---
+
+## I0 —— 决策冻结（0.5 天，无代码）
+
+**为什么单独成轮**：I1 一旦建表，`snapshot` 的 key 形态、`resolve` 的 path 解析、`domain` 的列都定了；D3 选错要删表重建。
+
+**要做的事**
+
+- 把 `docs/shlink-migration-analysis.md` §9 的 D2–D5 逐条给出结论，并写回该表（D1 已结案＝开放）。
+- **0004/0005 DDL 评审稿已产出**（2026-11-09）：SQL 在 `supabase/migrations/`，差异说明、设计决策、线上待验证项、应用顺序与待拍问题在 `docs/ddl-review-0004-0005.md`。**尚未执行**。
+- 定两件事：控制台静态站托管位置（FC 静态 / OSS+CDN / Supabase Storage）、Domains 页红标的处置（见契约 §6 坑 3 的 a/b/c）。
+
+**我的推荐（供他一次拍完）**
+
+| # | 推荐 | 理由 |
+|---|---|---|
+| D2 状态码 | 全局固定 302 | 301/308 会被浏览器自己缓存，统计必丢，与「逐次准确」冲突 |
+| D3 多段 slug | **本期不支持** | 支持它要改 FC 的 path 解析和快照 key（`a/b` 会被 `/` 切开）；先锁 `[a-z0-9-_]{1,64}` 单段，快照 key 保持 `domain|code` |
+| D4 地理定位 | M3 再说，本期只存 `visitor_key` | 要 License + NAT 出网 + mmdb 落盘，三项都是新成本 |
+| D5 存量数据 | 不搬 | 历史短码大小写冲突、访问归属都对不齐，重开更干净 |
+| 静态托管 | **OSS + CDN**（或 FC 静态，若他已有 OSS 桶则 OSS 更省事） | 产物是纯静态 + service worker；Supabase Storage 当静态站会有额外域名与缓存策略成本 |
+| 域名红标 | 先接受红标（方案 a） | 纯展示，不阻断操作；等 I6 有空再决定要不要给每个域名加 health 路由 |
+
+**出口判据**：上表六行全部有明确结论，写进 §9 与本文档【C】的备注列。
+
+---
+
+## I1 —— 数据面正式化（0004，2–3 天）
+
+> **状态：已验收（2026-11-09）。** 0004（32 条）+ 0005（8 条）+ 0006（7 条）全部应用成功，验证记录见 `docs/verification/i1-results.md`。0006 是按评审稿 §8-1 的缺口补的 UA 解析（规则表 `ua_rule` + `ua_parse`，在 drain 时算）。
+
+**目标**：把「探针版能跑」变成「正式表能跑」，但**不碰线上跳转函数**。这一轮结束时用 SQL/`curl` 能证明整条数据面闭环。
+
+**范围**
+
+1. `supabase/migrations/0004_core_tables.sql`：`domain`（含哨兵行 0）、`short_url`、`tag`、`short_url_tag`、`short_url_visits_counts`、`orphan_visits_counts`、`visit_inbox`、`visit`（按月分区）、`link_version`、`bot_pattern`。
+2. `0005_shorten_and_resolve.sql`：`create_short_url(...)`、`resolve_short(...)`、`snapshot_short_links()`、`link_seq()`、`drain_visit_inbox(...)`、`prune_dead_links(...)`（后两个先建好但不调度，I2 再挂 cron）。
+3. 权限：每张表四行；`resolve`/`snapshot` 只授给 `service_role`；`anon` 一律 revoke。
+4. 短码规则：入库统一小写、`[a-z0-9-_]{1,64}` 白名单、随机码 5 位起、自定义 slug 冲突 409、并发用 `pg_advisory_xact_lock`。
+5. 把 `link_version` 触发器从 `probe_short_url` 改挂 `short_url`（**新触发器，旧的不动**，I6 一起删）。
+
+**建表前必须对齐的 7 处差异**（现有 `tech-framework.md` §4 DDL 与 §5、契约文档对不上，照抄会缺字段；逐条取舍见 `docs/ddl-review-0004-0005.md` §2）：
+
+| # | 缺什么 | 谁需要 | 处理 |
+|---|---|---|---|
+| 1 | `short_url.enabled` | §5.2.2 快照 `where enabled`、§5.4 软删 | **必加**，`not null default true` |
+| 2 | `short_url.last_visit_at` | §5.4 死链判定唯一依据 | **必加**，`timestamptz` |
+| 3 | `visit.referer / ua / visited_url / redirect_url / potential_bot / orphan_type` | 契约 `ShlinkVisit`（6 个字段） | **必加**；`ua` 截断 512、`referer` 1024、`visited_url`/`redirect_url` 2048 |
+| 4 | `domain` 三个 404 回退列（`base_url_redirect` / `regular404_redirect` / `invalid_short_url_redirect`） | `listDomains` / `editDomainRedirects` | **必加**（现有只有 `landing_url`，语义是它的一部分，保留 `landing_url` 作为兜底） |
+| 5 | `api_key` + `api_key_role` | 兼容层鉴权（I3） | 本轮建表但不用；`key_hash bytea unique`、`name unique`、`enabled`、roles 三型 + 作用域 |
+| 6 | `visit_inbox` 的 `visited_url` | 孤儿访问 `visitedUrl` | **必加**；现有 `redirect_to` 保留 |
+| 7 | `short_url.author_api_key_id` | 作用域 `AUTHORED_SHORT_URLS`（I3） | **必加**；外键在 `api_key` 建好后补，`on delete set null` |
+
+**不做什么**：不切跳转函数、不写兼容层、不动 cron、不删探针。
+
+**本机验证（不出公网依赖）**：直接对线上库跑 SQL——建链 → resolve（域名优先/回落全局）→ 快照行数 → 改 long_url 后 seq +1 → 软删后快照少一行 → 权限矩阵（anon 直连表必须 42501/0 行）。
+
+**出口判据**：`docs/verification/i1-results.md` 记录全部 SQL 与输出；【B】I1 全勾。
+
+---
+
+## I2 —— 跳转切正式表（1–2 天）
+
+> **状态：已验收（2026-11-09）。** 两文件版已上传 FC、最小实例数 = 1；线上 302/`cached=1`/0.31s 传播/停用 0.28s 404/drain 全部实测通过。追加 `0007` 把触发器改行级（语句级在 0 行更新时也 bump）。按他决定**不配 `VISITOR_SALT`**，`visitor_key` 恒 null、不做 UV。验证见 `docs/verification/i2-local-results.md`。
+
+**目标**：线上 `http://example.com/{code}` 从正式表 302，访问落正式 inbox，计数在分钟内更新，死链清理能出真清单。
+
+**范围**
+
+1. 改 `fc/redirect/index.js` 顶部常量：`probe_resolve` → `resolve_short`、`probe_inbox` → `visit_inbox`、`probe_link_seq`/`probe_link_snapshot` → `link_seq`/`snapshot_short_links`。
+2. **不只是改常量**——现有函数有四处要改（评审 0004/0005 时核出来的，见 `docs/ddl-review-0004-0005.md` §5）：
+   - `cache.js` 目前只存 `long_url` 字符串，要改成存 `{id, long_url, forward_query, valid_since, valid_until, visits_limited}`；快照里默认域名的 `domain` 是 `null`，按「有 domain 进域名表、否则进全局表」建索引。
+   - 缓存命中路径要补三项判定：有效期（本机时钟）、`visits_limited` 为真时回落查库（`max_visits` 的计数分钟级变化，不能靠快照）、`forward_query` 为真时把原请求 query 拼到 Location 后面（**现在完全没实现**）。
+   - 404 分支要写 `orphan_type`（`regular_404`），命中分支要写 `short_url_id`，两者都要带 `visitor_key = sha256(ip + VISITOR_SALT)`（新环境变量）、`ua`、`referer`、`visited_url`、`redirect_to`。
+   - `recordVisit` 的 body 从探针形状 `{payload: {...}}` 改成正式表的列形状。
+3. `cron.schedule` 挂两条：`drain`（每分钟）、`prune`（每天 GMT 19:00，**先 dry-run**）。
+4. 打包 `index.js` + `cache.js` 上传 FC（他操作），配 **最小实例数 ≥ 1**。
+5. 复测缓存数字：命中 `dur=0;cached=1`、seq 传播 ≤5s。
+6. 补三条行为用例：`?a=1` 透传、`valid_until` 到期后 404、`max_visits` 打满后 404。
+7. `0007_link_version_row_trigger.sql`：`short_url` 上的 `link_version` 触发器由语句级改行级——线上实测语句级在 0 行更新时也会触发，dry-run prune 会白 bump seq。
+
+**他要在控制台做的（精确到位置）**
+
+- 函数计算 > 函数 > `test-supabase` > 代码 > 上传 ZIP（`dist/redirect.zip`，含 `index.js` + `cache.js` 两文件）；
+- 弹性配置 > 最小实例数 **1**；
+- 环境变量：确认 `SUPABASE_URL`（VPC 内网）+ `SUPABASE_SERVICE_ROLE_KEY`；**新增 `VISITOR_SALT`**（值由他生成，我不接触明文；不配则 `visitor_key` 为 null）；
+- 域名管理 > `example.com` > 路由 `/*` 指向该函数（应已如此，确认即可）。
+
+**不做什么**：不做 HTTPS（I6）、不改 path 规则、不加多段 slug。
+
+**出口判据**：真实 `curl -i` 拿到 `302 + Location`；`select count(*) from visit` 在 1–2 分钟内增长；`short_url_visits_counts` 出现 slot 行；停用一条后 ≤5s 变 404；prune dry-run 清单只含预期行。
+
+---
+
+## I3 —— 控制台连通（B1，2–3 天）
+
+**目标**：浏览器里的 shlink-web-client 能连上我们，加服务器不报「不可达」，能建/改/删/查短链。
+
+**范围**
+
+1. `supabase/functions/compat/index.ts`（`--no-verify-jwt`）：路由前缀 `/rest/v3/*`，`OPTIONS` 预检，CORS 头，`X-Api-Key` 校验（sha256 查 `api_key`），失败返回 `ErrorType.INVALID_AUTHORIZATION` / `INVALID_API_KEY`。
+2. 五个方法：`GET /health`（返回 `{status:'pass',version:'4.0.0'}`）、`listShortUrls`、`createShortUrl`、`getShortUrl`、`updateShortUrl`、`deleteShortUrl`。
+3. 统一响应装配：`shortUrls` 包装、`pagination` 三字段、`meta` 三键恒在、`domain` 空串 → `null`、`shortUrl` 拼完整地址、`visitsSummary`（本轮先查计数表聚合）。
+4. 统一错误体：`{type,detail,title,status}`，409/404/400 三种映射。
+5. `api_key` 的第一条记录怎么来：`scripts/new-api-key.sh` 本地生成明文、只把 sha256 入库，明文只打印一次（**我不接触正式明文**）。
+
+**他要在控制台做的**：跑一次 `scripts/new-api-key.sh console` 拿正式 key 并保存。（`compat` 函数已用 `./functions-cli deploy compat --no-verify-jwt` 部署为 ACTIVE，无需再手动操作。）
+
+**状态**：已验收，证据见 `docs/verification/i3-results.md`。
+
+**出口判据**：浏览器 Add server → 无红标、页脚显示 `v4.0.0` → 新建一条带 tags 的短链 → 列表可见 → 编辑 title → 删除。Network 里每个写请求前有 OPTIONS 且 204。
+
+---
+
+## I4 —— 统计读接口（B2，2 天）
+
+**目标**：控制台短链详情页/概览页的数字与库里一致，能删访问。
+
+**范围**：8 个方法（`getVisitsOverview`、`getShortUrlVisits`、`deleteShortUrlVisits`、`getTagVisits`、`getDomainVisits`、`getOrphanVisits`、`deleteOrphanVisits`、`getNonOrphanVisits`）。要点：`visits` 包装、`visitLocation` 恒 `null`、孤儿带 `type`、两个 `delete` 必须返回 `{deletedVisits}` JSON。
+
+**不做什么**：不做地理富化、不做 Bot 字典精修（先用最简 UA 子串规则，写进 `bot_pattern` 初始集）。
+
+**出口判据**：从浏览器打 3 次真实跳转 → 1–2 分钟后详情页出现 3 条、概览数字同步；`deleteShortUrlVisits` 返回的 `deletedVisits` 与页面提示一致；`/visits/orphan` 三类都能靠造数据命中。
+
+**状态**：已验收，证据见 `docs/verification/i4-results.md`。
+
+---
+
+## I5 —— 控制台补全 + 上线（B3/B4，2–3 天）
+
+**状态**：**已验收**。`https://console.example.com` 证书有效，页面/资源/深链/Service Worker/跨域 API 全通；证据见 `docs/verification/i5-results.md`。
+
+**目标**：23 个方法全部有实现，控制台静态站挂到正式地址，界面无死链。
+
+**范围**
+
+1. B3：`listTags`、`tagsStats`（每条带 `visitsSummary`）、`deleteTags`（`tags[]` 查询串，空响应）、`editTag`（PUT，空响应）。
+2. B4：`listDomains`（含 `defaultRedirects`）、`editDomainRedirects`、`mercureInfo`（404 + `MERCURE_NOT_CONFIGURED`，让界面降级）、`getShortUrlRedirectRules`（返回 `{defaultLongUrl, redirectRules: []}`）、`setShortUrlRedirectRules`（M3 前返回 501）。
+3. 版本旋钮：D 系列能力未实现前 `version` 保持 `4.0.0`（契约 §5）。
+4. 控制台构建产物上线 + 自定义域名/CORS 联调；`build/` 加一条部署说明（谁上传、传什么、怎么回滚）。
+
+**出口判据**：Domains 页能列出域名（红标按 I0 决定）；Mercure 报错不白屏；跳转规则页能打开且显示「无规则」；短链/标签/访问三类页面无 4xx 报错（Network 面板核）；控制台地址在正式域名下可访问。
+
+---
+
+## I6 —— 生产硬化（2–3 天）
+
+**状态**：已验收（2026-11-10）。探针退场、prune 转真（job 8）、50 并发压测（p95 416ms）、可观测查询、runbook、HTTPS 复测（302/301 强制跳转/404/统计落库）全部完成。证据见 `docs/verification/i6-results.md`。
+
+**目标**：把临时态清干净，并让系统在出问题时能被发现。
+
+**范围**
+
+1. 探针退场：删 `probe_*` 表/函数、`supabase/functions/probe*`、`fc/redirect-probe/`；确认无引用后再删。
+2. `prune_dead_links` 由 dry-run 转真实（**他先看清单**）。
+3. HTTPS：`example.com`（FC 域名）挂证书，复测 302。（`cdn.example.com` 为 P0 CDN 测试域名，无运行引用，2026-11-10 定案放弃，云上可下线。）
+4. 可观测：FC 日志检索口径、`Server-Timing` 采样、inbox 积压告警（`processed_at is null` 行数阈值）、快照 seq 停滞检查。**只做能跑在现成组件上的**，不引入新服务。
+5. 压测复核：50 并发下 302 成功率与 p95（对标 §5.2.1 的 50 并发 p95≈804ms）；控制台列表 50 条翻页。
+6. `docs/runbook.md`：加域名 SOP（备案 → FC 域名 → 证书 → 路由 → CORS）、回滚步骤、故障排查树。
+
+**出口判据**：探针零引用（`grep` 证据）；prune 真跑一次且清单与结果一致；HTTPS 下 `curl` 拿 302；告警阈值能在库里查出一行；runbook 能让一个没参与过的人照做。
+
+---
+
+# 【B】验收清单
+
+> 规则：每条都要附**证据**（命令输出 / 截图 / SQL 结果），只写「已完成」不算。上一轮有未勾项，下一轮不启动。
+
+## B0 —— I0 决策冻结
+- [x] D2 跳转状态码结论已写入 §9（固定 302）
+- [x] D3 多段 slug 结论已写入 §9（不支持；契约 §6 无需改，因本期不实现多段）
+- [x] D4 地理定位结论已写入 §9（推迟）
+- [x] D5 存量数据结论已写入 §9（不搬）
+- [x] 控制台静态托管位置已定：FC 静态托管，不引入新技术栈（他 2026-11-09 决定）
+- [x] Domains 页红标处置已定：先接受红标（方案 a）
+- [x] 0004 DDL 评审稿已产出并被认可（2026-11-09，`docs/ddl-review-0004-0005.md`）
+
+## B1 —— I1 数据面正式化
+- [x] 0004/0005 在线上库应用成功：13 张表 + `ua_rule`（0006），32 + 8 + 7 条语句全 OK
+- [x] 权限矩阵：`anon`/`authenticated` 对业务表与 RPC 全为 false，`service_role` 为 true；分区 `rls=true force=true`
+- [x] `create_short_url`：自定义 slug 冲突 → PostgREST 409 `non_unique_slug`；随机码走单行 insert + 20 次重试
+- [x] 短码入库为小写（`MiXeD` → `mixed`）
+- [x] `resolve_short`：域名专属优先、回落 `domain_id=0`、过期/超次数/停用均判为不可跳
+- [x] 快照 RPC 行数 = `enabled` 行数；改 `forward_query`/停用/删除后 `seq` +1；改 `visits_count`/`title` 不 +1
+- [x] 软删后快照少一行、`seq` +1
+- [x] `docs/verification/i1-results.md` 已写
+
+## B2 —— I2 跳转切正式表
+- [x] `curl -i http://example.com/<真码>` → `302 + Location`（`Location` 含透传 query）
+- [x] 命中缓存：`Server-Timing` 含 `dur=0;cached=1`
+- [x] 新建短链后 ≤5s 可跳（seq 传播）：实测 0.31s
+- [x] 停用后 ≤5s 变 404 且不打库（实测 0.28s，`dur=0;cached=1`）
+- [x] 1–2 分钟内 `visit` 明细出现、计数表出现 slot 行（本机请求经 cron 6 drain：`pending=0`、`visit=14`、`slots=8`；真域名 5 行也已 drain）
+- [x] 未命中访问写 `visit_inbox` 且 `orphan_type` 正确（`regular_404` / `invalid_short_url`）
+- [x] 本机行为用例全通：query 透传、`valid_until` 到期 404、`max_visits` 打满 404、HEAD 302、停用 404（`docs/verification/i2-local-results.md`）
+- [x] prune dry-run 清单只含预期行、未 bump seq（发现 0 行也会 bump，已用 0007 行级触发器修复并复测）
+- [x] 最小实例数 = 1 已确认（他 2026-11-09 复述）
+- [x] `VISITOR_SALT` 不做（他 2026-11-09 决定：不在意该安全项、省资源）；代价是 `visitor_key` 恒为 null、无 UV 口径，PV/明细/计数不受影响
+
+## B3 —— I3 控制台连通（B1）
+- [x] Add server 后无「不可达」，页脚版本为 `4.0.0`
+- [x] 新建短链（随机码 + 自定义 slug）各成功一条（随机 `9e6h3` 走 API、自定义 `dui3` 走 UI）
+- [x] 列表分页、按 `dateCreated-DESC` 排序正确（API `itemsPerPage=2&page=2` → `pagesCount=2,totalItems=4`；UI 列表按创建时间倒序）
+- [x] 编辑 title/longUrl 生效，且跳转目标随之改变（6s 后 `302` 指向新目标）
+- [x] 删除后列表消失，跳转变 404（≤5s，实测 6s 轮询点已 404）
+- [x] 错误 key → 界面提示鉴权失败，不是 JSON 解析错误（`401 invalid-api-key` → 列表错误态）
+- [x] 重复 slug → 界面提示冲突文案（409，`Custom slug "dui3" is already in use`）
+- [x] OPTIONS 预检 204，CORS 无报错
+
+## B4 —— I4 统计读接口（B2）
+- [x] 3 次真实访问后详情页显示 3 条，字段（referer/UA/bot）与库一致（2 条 iPhone/Safari 非 Bot + 1 条 curl Bot）
+- [x] 概览页 `nonOrphanVisits` / `orphanVisits` 与 SQL 对得上（19/12 → 删后 16/0）
+- [x] 标签页访问、域名页访问两种筛选正确（`tag=i4` 3 条；域名 16 条）
+- [x] 孤儿访问三分类各造一条，列表 `type` 正确（`base_url` / `invalid_short_url` / `regular_404`）
+- [x] 删除访问返回 `{deletedVisits:n}` 且界面数字同步（`deletedVisits` 3 与 12；概览 19→16、孤儿 12→0）
+- [x] 时间区间筛选（startDate/endDate）边界正确（1 分钟窗口命中 3 条）
+
+## B5 —— I5 控制台补全（B3/B4）
+- [x] 标签：新建 → 统计计数 → 重命名 → 删除四条全通（UI `PUT/DELETE /tags` 均 204；`/tags/stats` 计数 2/1）
+- [x] `tagsMode=all/any` 两种筛选结果不同且正确（`all` → 1 条；`any` → 2 条）
+- [x] Domains 页列出全部域名，`defaultRedirects` 显示正确（`example.com` + 三项 null）
+- [x] 编辑域名回退地址后回读一致（`PATCH /domains/redirects` 200，UI 显示，再置回 null）
+- [x] Mercure 失败不白屏，实时开关降级（端点 404；v4.9.0 控制台无 `mercureInfo` 调用路径，页面正常）
+- [x] 跳转规则页可打开、显示空规则、保存给出明确报错（501）
+- [x] 控制台在正式地址可访问，刷新任意深链不 404（history fallback）——`https://console.example.com` 页面/资源/深链/跨域 API 全通；证书未覆盖，见下一条
+- [x] PWA service worker 注册成功且不缓存 API 响应（正式域名 active 1 条、controller true；`/rest/v3/*` 直连）
+
+## B6 —— I6 生产硬化
+- [x] 探针代码/表零引用（库 0 表 0 函数、代码目录与 probe/probe-db 部署已删、cron 5 移除；残留 `probe_` 仅历史迁移与文档）
+- [x] prune 转真后清单与结果一致，且可撤销（job 8 真实执行；i6prune 闭环：停用→404→enabled=true 恢复，测试数据已清）
+- [x] `https://example.com/<码>` → 302（DigiCert DV 证书受信；HTTPS 302 + cached=1、HTTP 301 强制跳转、陌生码 404、访问 14→15 落库全验；cdndev 已放弃）
+- [x] 50 并发 302 成功率 100%，p95 记录在案（i6load 1000/1000=302，p95 416ms，压后清理）
+- [x] inbox 积压阈值查询能返回结果（健康查询：pending=0/oldest=0/drain≈4s/seq=85）
+- [x] `docs/runbook.md` 覆盖加域名、回滚、三类故障排查（已建并核对命令）
+
+---
+
+# 【C】整体迭代进度清单
+
+> 这是唯一需要频繁更新的表。每轮结束后改这里的「状态 / 实际起止 / 备注」，并在下方变更记录加一行。
+
+| 轮 | 主题 | 状态 | 依赖 | 完成判据 | 实际起止 | 备注 |
+|---|---|---|---|---|---|---|
+| I0 | 决策冻结 | **已验收**（D2–D5 与默认域名已定；静态托管/红标后置到 I5 前） | — | B0 全勾 | 2026-11-09 当日 | D3 是 I1 的硬前置 |
+| I1 | 数据面正式化 | **已验收** | I0 | B1 全勾 | 2026-11-09 当日 | 0004+0005+0006 三个迁移文件，验证见 `docs/verification/i1-results.md` |
+| I2 | 跳转切正式表 | **已验收** | I1 | B2 全勾 | 2026-11-09 当日 | 线上 302/缓存/0.3s 传播/drain 全通；0007 修行级触发器；不做 `VISITOR_SALT`（他定） |
+| I3 | 控制台连通（B1） | **已验收** | I1 | B3 全勾 | 2026-11-09 当日 | `0008` 五个 RPC + `compat` 函数；浏览器建改删查与跳转联动全通，见 `docs/verification/i3-results.md` |
+| I4 | 统计读接口（B2） | **已验收** | I2、I3 | B4 全勾 | 2026-11-09 当日 | `0009` 五个 RPC + `compat` 8 条路由；概览对账、标签/域名/时间筛选、孤儿三类、删访问联动全通，见 `docs/verification/i4-results.md` |
+| I5 | 控制台补全（B3/B4） | **已验收** | I4 | B5 全勾 | 2026-11-09 → 2026-11-10 | `0010` 七个 RPC + 9 条路由；用户 FC 函数 `console-prod` + 证书，正式域名页面/资源/深链/SW/跨域 API 全通，见 `docs/verification/i5-results.md` |
+| I6 | 生产硬化 | **已验收** | I5 | B6 全勾 | 2026-11-10 当日 | 探针退场/prune 转真/压测(p95 416ms)/可观测/runbook/HTTPS 复测全通（B6 6/6；cdndev 放弃），见 `docs/verification/i6-results.md` |
+
+状态词只用四个：**未开始 / 进行中 / 待他拍板 / 已验收**。
+
+## 与既有任务编号的对应
+
+| 原任务 | 归入 |
+|---|---|
+| #18 部署两文件版并复测 | I2（可提前单独做） |
+| #23 api_key + 兼容层鉴权与 CORS | I3 的前半 |
+| #24 兼容层 B1 | I3 |
+| #25 兼容层 B2 | I4 |
+| #26 兼容层 B3 | I5 |
+| #27 兼容层 B4 | I5 |
+| #13 HTTPS 证书复测 | I6 |
+
+## 变更记录
+
+| 日期 | 变更 |
+|---|---|
+| 2026-11-09 | 首版；确立 I0–I6 切法与三份清单；标注 0004 与契约的 6 处字段差异 |
+| 2026-11-09 | I0/I1 验收；0004+0005+0006 已应用；I2 代码与本机验证完成，挂 cron 6/7，状态转进行中 |
+| 2026-11-09 | I2 线上复测通过（302/`cached=1`/0.3s 传播/drain）；发现并修复语句级触发器 0 行也 bump 的问题（0007 行级） |
+| 2026-11-09 | I3 验收：0008 五个 RPC + `compat` 函数上线；控制台 Add server / 建改删查 / 重复 slug / 错误 key / CORS 全通 |
+| 2026-11-09 | I4 验收：0009 五个 RPC + 8 条统计路由上线；概览对账、标签/域名/时间筛选、孤儿三类、删访问联动全通；修 `itemsPerPage=5000` 钳位与 ADB 无 WHERE 禁删 |
+| 2026-11-09 | I5 代码完成：0010 七个 RPC + 9 条路由；标签/域名/Mercure/规则 UI 联调全通；build 产物内联为单文件 `console` 函数并部署 ACTIVE；差正式域名绑定 |
+| 2026-11-10 | I5 正式地址：静态包改挂用户 FC 函数 `console-prod`；补证书后 `console.example.com` 页面/资源/深链/31 次跨域 API/SW 全通（0 页面错误）⇒ I5 验收 |
+| 2026-11-10 | I6 进行中：探针全退场（库 0/代码删/部署删/cron 5 移除）；prune 转真 job 8 + i6prune 停用→404→撤销闭环；i6load 50 并发 1000/1000=302、p95 416ms；可观测健康查询 + runbook 落地；差 dev/cdndev 证书 |
+| 2026-11-10 | cdn.example.com 定案放弃：全仓库仅 docs 历史引用、无运行代码/配置依赖（P0 CDN 测试域名）；B6 HTTPS 项收窄为仅 example.com，云上 CDN 域名与解析可下线 |
+| 2026-11-10 | I6 验收：example.com 证书（DigiCert DV）受信，HTTPS 302/cached=1、HTTP 301 强制跳转、陌生码 404、访问统计 14→15 落库全通；B6 6/6；Domains 红标改因 health 路径 404（I0 观察项），runbook 口径同步 |
+| 2026-11-10 | 收尾批次：0011 加 `not_found_redirects` RPC + 默认域名 scheme 改 https；跳转函数 404 分支按 shlink 语义回跳（域名级优先/占位符/双斜杠折叠），孤儿分类对齐；线上三类回跳闭环实测后临时配置已清；TDD 回归测试 11/11 |
+| 2026-11-10 | 交接：新增 `docs/handover.md`（项目定位/架构、线上状态、仓库地图、跑验证、平台坑、凭据红线、待办 #41–#44 与发布前置、工作约定）；地理富化设计定稿（`geo-enrichment.md`）转入待实现 |

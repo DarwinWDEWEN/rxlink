@@ -1,0 +1,13 @@
+# dependencies
+/node_modules
+
+# testing
+/coverage
+/reports
+
+# production
+/build
+/dist
+
+npm-debug.log*
+public/servers.json*

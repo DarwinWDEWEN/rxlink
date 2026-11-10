@@ -1,0 +1,7 @@
+{
+  "name": "rxlink-console",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  }
+}

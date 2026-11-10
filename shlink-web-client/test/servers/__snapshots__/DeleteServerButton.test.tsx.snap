@@ -1,0 +1,28 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`<DeleteServerButton /> > renders expected content 1`] = `
+<button
+  class="text-danger hover:underline"
+  type="button"
+>
+  Foo bar
+</button>
+`;
+
+exports[`<DeleteServerButton /> > renders expected content 2`] = `
+<button
+  class="text-danger hover:underline"
+  type="button"
+>
+  baz
+</button>
+`;
+
+exports[`<DeleteServerButton /> > renders expected content 3`] = `
+<button
+  class="text-danger hover:underline"
+  type="button"
+>
+  something
+</button>
+`;
