@@ -226,6 +226,32 @@
 
 ---
 
+## I7 —— 地理富化（#41–#44）
+
+> **状态：进行中（2026-11-10）。** #41（迁移 0012）、#42（跳转函数 + drain 带 remote_addr）、#44 的契约与兜底两半已完成并上线；**#43 富化函数未实现**，前置是 MaxMind License key（他申请）。
+> 设计定稿：`docs/geo-enrichment.md`。任务编号沿用交接文档的 #41–#44。
+
+**目标**：访问明细能带上地理信息（国家/省/市/经纬度/时区），且原始 IP 只短暂留存。
+
+**范围**
+
+1. **#41 迁移 `0012_geo_location.sql`**（15 条语句，已应用）：
+   - `visit_inbox.remote_addr`；`visit.remote_addr`
+   - `country/region/city` 正名为 `country_name/region_name/city_name`（D4 推迟期留下的三个空列），补 `country_code/lat/lon/timezone`
+   - 部分索引 `visit_pending_location_idx`（只装 `remote_addr` 非空的行）
+   - 三个 RPC：`visits_pending_location` / `apply_visit_locations` / `retire_remote_addr`，只授 service_role
+2. **#42 跳转函数与 drain 带上 `remote_addr`**：`fc/redirect/index.js` 的 visit payload 加 `remote_addr`（取 `x-forwarded-for` 首元素，截断 64，无值写 null）；`drain_visit_inbox` 的 insert 多写一列（覆盖 0006 同名函数，其余逻辑一致）。
+3. **#43 富化函数 `fc/geo-enrich/`**：**事件函数**（`exports.handler`），双网络，定时触发器每分钟（`0 * * * * *` UTC，超时 ≥60s，内存 ≥512MB）；mmdb 放 `/tmp`（冷启动或满 30 天重下，失败 1 小时退避）；拉批 → 本地查 IP → 回写 → 清空 `remote_addr`；日志不得出现 IP。**待 MaxMind License key**。
+4. **#44 契约 + 兜底**：`visit_json` 的 `visitLocation` 由恒 null 改为读列；`retire_remote_addr(7)` 由 pg_cron 每小时跑（jobid 9）做 7 天硬留存。
+
+**隐私口径**（与设计 §7 一致）：原始 IP 富化后立即清空；7 天硬上限由纯 SQL cron 兜底；IP 不进契约、不写日志、不进快照。
+
+**不做什么**：不在热路径定位；不长期存 IP；不做固定公网 IP；不抄 shlink 的 `geolocation_db_updates` 表。
+
+**出口判据**：见 B7。
+
+---
+
 # 【B】验收清单
 
 > 规则：每条都要附**证据**（命令输出 / 截图 / SQL 结果），只写「已完成」不算。上一轮有未勾项，下一轮不启动。
@@ -297,6 +323,20 @@
 - [x] inbox 积压阈值查询能返回结果（健康查询：pending=0/oldest=0/drain≈4s/seq=85）
 - [x] `docs/runbook.md` 覆盖加域名、回滚、三类故障排查（已建并核对命令）
 
+## B7 —— I7 地理富化数据面（#41/#42/#44）
+- [x] `0012_geo_location.sql` 15 条语句逐条应用成功（2026-11-10）
+- [x] 列改名传播到既有分区：`visit` / `visit_2026_11` / `visit_2027_01` 均已无 `country/region/city`
+- [x] 部分索引 `visit_pending_location_idx` 建在分区父表上
+- [x] 三个 RPC 行为：`visits_pending_location` 拉到待富化批次 / `apply_visit_locations` 写列并清空 IP / `retire_remote_addr(7)` 清掉超期行
+- [x] `drain_visit_inbox` 把 `remote_addr` 从 inbox 带到 `visit`（实测 inbox 1186 → visit 1185）
+- [x] 契约两态：有定位 → `visitLocation` 对象；无定位 → `null`；`remote_addr` 不出现在契约里
+- [x] 权限矩阵：三个 RPC 与两张表 `anon` 全部 401/拒绝，`service_role` 200
+- [x] 兜底 cron `rxlink-retire-ip`（jobid 9，每小时）已挂
+- [x] 跳转函数单测 15/15（含 4 条 remote_addr 新用例）
+- [x] 契约回归：`list_visits` / `visits_overview` 输出形状不变
+- [ ] **跳转函数新包上传 FC**（待他操作：`dist/redirect.zip`，控制台上传）
+- [ ] **#43 富化函数**（待 MaxMind License key）
+
 ---
 
 # 【C】整体迭代进度清单
@@ -312,6 +352,7 @@
 | I4 | 统计读接口（B2） | **已验收** | I2、I3 | B4 全勾 | 2026-11-09 当日 | `0009` 五个 RPC + `compat` 8 条路由；概览对账、标签/域名/时间筛选、孤儿三类、删访问联动全通，见 `docs/verification/i4-results.md` |
 | I5 | 控制台补全（B3/B4） | **已验收** | I4 | B5 全勾 | 2026-11-09 → 2026-11-10 | `0010` 七个 RPC + 9 条路由；用户 FC 函数 `console-prod` + 证书，正式域名页面/资源/深链/SW/跨域 API 全通，见 `docs/verification/i5-results.md` |
 | I6 | 生产硬化 | **已验收** | I5 | B6 全勾 | 2026-11-10 当日 | 探针退场/prune 转真/压测(p95 416ms)/可观测/runbook/HTTPS 复测全通（B6 6/6；cdndev 放弃），见 `docs/verification/i6-results.md` |
+| I7 | 地理富化（#41–#44） | **进行中** | I6 | B7 全勾 | 2026-11-10 起 | #41 迁移 0012（15 条）+ #42 跳转/drain 带 remote_addr + #44 契约与兜底已上线；差**跳转包上传**（他）与 **#43 富化函数**（等 MaxMind key） |
 
 状态词只用四个：**未开始 / 进行中 / 待他拍板 / 已验收**。
 
@@ -343,3 +384,4 @@
 | 2026-11-10 | I6 验收：example.com 证书（DigiCert DV）受信，HTTPS 302/cached=1、HTTP 301 强制跳转、陌生码 404、访问统计 14→15 落库全通；B6 6/6；Domains 红标改因 health 路径 404（I0 观察项），runbook 口径同步 |
 | 2026-11-10 | 收尾批次：0011 加 `not_found_redirects` RPC + 默认域名 scheme 改 https；跳转函数 404 分支按 shlink 语义回跳（域名级优先/占位符/双斜杠折叠），孤儿分类对齐；线上三类回跳闭环实测后临时配置已清；TDD 回归测试 11/11 |
 | 2026-11-10 | 交接：新增 `docs/handover.md`（项目定位/架构、线上状态、仓库地图、跑验证、平台坑、凭据红线、待办 #41–#44 与发布前置、工作约定）；地理富化设计定稿（`geo-enrichment.md`）转入待实现 |
+| 2026-11-10 | I7 起：仓库纳入 git（基线提交 3c95212）；`0012_geo_location.sql` 15 条语句上线（列改名已传播到三个分区、部分索引、三个 RPC、drain 覆盖、visit_json 覆盖、兜底 cron jobid 9）；跳转函数加 `remote_addr`（TDD，先红后绿，单测 15/15）；`dist/redirect.zip` 已重打包待上传；#43 富化函数等 MaxMind key |

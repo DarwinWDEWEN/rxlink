@@ -91,9 +91,9 @@ after(async () => {
   if (mock) await new Promise((r) => mock.close(r));
 });
 
-function req(pathname, host = HOST) {
+function req(pathname, host = HOST, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
-    const r = http.get(base + pathname, { headers: { host } }, (res) => {
+    const r = http.get(base + pathname, { headers: { host, ...extraHeaders } }, (res) => {
       let raw = '';
       res.on('data', (d) => { raw += d; });
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: raw }));
@@ -226,4 +226,34 @@ test('回退查询失败：降级裸 404，不影响服务', async () => {
   const res = await req('/nosuch');
   state.failFallback = false;
   assert.equal(res.status, 404);
+});
+
+test('入队带 remote_addr：取 x-forwarded-for 首元素', async () => {
+  state.inbox.length = 0;
+  const res = await req('/known1', HOST, { 'x-forwarded-for': '203.0.113.45, 70.41.3.18, 150.172.238.178' });
+  assert.equal(res.status, 302);
+  const inbox = await waitOrphan();
+  assert.equal(inbox.length, 1);
+  assert.equal(inbox[0].remote_addr, '203.0.113.45');
+});
+
+test('入队带 remote_addr：孤儿访问同样带', async () => {
+  state.inbox.length = 0;
+  await req('/nosuch', HOST, { 'x-forwarded-for': '198.51.100.7' });
+  const inbox = await waitOrphan();
+  assert.equal(inbox[0].remote_addr, '198.51.100.7');
+});
+
+test('没有 x-forwarded-for 时 remote_addr 为 null（不留空串）', async () => {
+  state.inbox.length = 0;
+  await req('/known1');
+  const inbox = await waitOrphan();
+  assert.equal(inbox[0].remote_addr, null);
+});
+
+test('remote_addr 长度截断（x-forwarded-for 可被伪造成任意长度）', async () => {
+  state.inbox.length = 0;
+  await req('/known1', HOST, { 'x-forwarded-for': 'a'.repeat(300) });
+  const inbox = await waitOrphan();
+  assert.ok(inbox[0].remote_addr.length <= 64, `实际长度 ${inbox[0].remote_addr.length}`);
 });

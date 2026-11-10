@@ -12,8 +12,9 @@
 | 数据面 | ADB PostgreSQL Supabase | API host `https://your-project-ref.supabase.co`；FC 走 **VPC 内网地址** | `supabase/migrations/` |
 | 兼容层 | Supabase Edge Function `compat` | `…/functions/v1/compat/rest/v3/*`（shlink 契约） | `supabase/functions/compat/index.ts` |
 | 控制台 | FC Web 函数 `console-prod` | `https://console.example.com`（已配证书 + 强制 HTTPS） | `shlink-web-client/` build → `fc/console/index.js` |
-| 落库 | cron `rxlink-drain`（job 6，每分钟） | `drain_visit_inbox(500)` | `0005` |
+| 落库 | cron `rxlink-drain`（job 6，每分钟） | `drain_visit_inbox(500)` | `0005` / `0012` |
 | 死链清理 | cron `rxlink-prune`（job 8，每天 19:00） | `prune_dead_links(180, false)`（真实执行） | `0005` |
+| IP 兜底清理 | cron `rxlink-retire-ip`（job 9，每小时） | `retire_remote_addr(7)`（7 天硬留存上限） | `0012` |
 
 关键表：`short_url`、`domain`（id 0 = 默认域名 `example.com`）、`visit_inbox`（UNLOGGED 热路径入队）、`visit`（按月分区明细）、`short_url_visits_counts`、`link_version`（单行 seq，缓存失效依据）、`api_key`（只存 sha256）。
 
@@ -45,11 +46,26 @@ select
 
 实测基线（2026-11-10）：`inbox_pending=0`、`inbox_oldest_sec=0`、`drain_last_success_sec≈4`、`link_seq=85`。
 
+### 3.1b 地理富化管道（IP 短暂留存）
+
+```sql
+select
+  (select count(*) from visit where remote_addr is not null)::text as ip_pending,
+  (select count(*) from visit where country_code is not null)::text as enriched_total,
+  (select count(*) from visit
+     where remote_addr is not null
+       and occurred_at < now() - interval '7 days')::text as ip_over_7d;
+```
+
+- `ip_pending > 0` 且持续增长 → 富化函数（#43）没跑或跑挂了；超过 7 天的部分会被 job 9 兜底清掉（数据丢失但不越权留存）。
+- `ip_over_7d > 0` → job 9（`rxlink-retire-ip`）没跑，查 `cron.job_run_details` 里 jobid=9。
+- 跳转函数新包上传前 `ip_pending` 恒为 0（线上跑的是老版本，不带 `remote_addr`）。
+
 ### 3.2 cron 运行历史
 
 ```sql
 select jobid, status, start_time::text, end_time::text
-from cron.job_run_details where jobid in (6,8) order by start_time desc limit 10;
+from cron.job_run_details where jobid in (6,8,9) order by start_time desc limit 10;
 ```
 
 prune 每天 19:00 才跑一次；当天未到点时 job 8 无记录属正常。`status` 应为 `succeeded`。

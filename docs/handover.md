@@ -28,21 +28,22 @@ shlink 兼容的短链平台，跑在阿里云 ADB PostgreSQL Supabase 上，自
 | 404 回退（域名级/全局/占位符/双斜杠折叠，`not_found_redirects` RPC） | 已上线（0011） |
 | 死链清理 `prune_dead_links(180,false)` | 已转真实执行（cron job 8） |
 | 探针退场、压测 50 并发 p95 416ms、runbook | 已完成 |
-| **地理富化** | **设计定稿（`docs/geo-enrichment.md`），未实现** |
+| **地理富化** | **数据面已上线（0012：remote_addr 链路 + 定位列 + 三个 RPC + 兜底 cron）；跳转函数新包待上传；富化函数未实现（等 MaxMind License key）** |
 | Supabase 付费版 | **未升级**（免费版禁生产，发布前置，用户云上动作） |
 
 ## 3. 仓库地图
 
 ```
-rxlink/
+rxlink/                    # 已纳入 git（基线提交 3c95212，2026-11-10）
 ├─ fc/
 │  ├─ redirect/          # 跳转热路径（Web 函数）
-│  │  ├─ index.js        # 入口：resolve/缓存命中/404 回退/入队
+│  │  ├─ index.js        # 入口：resolve/缓存命中/404 回退/入队（入队带 remote_addr）
 │  │  ├─ cache.js        # 实例内存快照 + link_version seq 轮询失效
-│  │  └─ test/redirect.test.js   # 11 例，真实子进程 + mock 网关
+│  │  └─ test/redirect.test.js   # 15 例，真实子进程 + mock 网关
+│  ├─ geo-enrich/        # 富化函数（事件函数）—— 待 #43 实现
 │  └─ console/           # 控制台 FC 函数（build 产物内联单文件）
 ├─ supabase/
-│  ├─ migrations/        # 0001–0011（已应用历史，不改不删；新变更写新编号）
+│  ├─ migrations/        # 0001–0012（已应用历史，不改不删；新变更写新编号）
 │  ├─ functions/
 │  │  ├─ compat/index.ts # 兼容层（/rest/v3，23 方法）
 │  │  ├─ console/        # Edge Function 形态的控制台（已被 FC 函数取代，闲置）
@@ -81,11 +82,11 @@ set -a; source supabase/functions/.env; set +a   # 导出 SUPABASE_URL / SUPABAS
 ```
 
 - **库操作**：`supabase db query --db-url "$SUPABASE_DB_URL" -o table "<单条 SQL>"`。平台**一次只认一条语句**；`numeric`/`void` 结果要 `::text` 或包一层；`-o table` 里 `numeric` 会乱码。
-- **迁移**：迁移文件是已应用历史，**不改不删**；新变更写新编号文件（如 `0012_geo_location.sql`），逐条 `supabase db query` 执行。注意 `$$` dollar-quote 会破坏 naive 按分号切分的脚本——切分脚本要处理 dollar-quote。
+- **迁移**：迁移文件是已应用历史，**不改不删**；新变更写新编号文件（如 `0013_xxx.sql`），逐条 `supabase db query` 执行。注意 `$$` dollar-quote 会破坏 naive 按分号切分的脚本——切分脚本要处理 dollar-quote。
 - **兼容层部署**：`SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli deploy compat --no-verify-jwt`（平台无 AK/SK，走 functions-cli）。
 - **跳转函数部署**：`cd fc/redirect && zip -r ../../dist/redirect.zip index.js cache.js` → FC 控制台上传部署。改源码后必须重新打包。
 - **控制台部署**：`(cd shlink-web-client && npm run build)` → `node scripts/build-console-fc.mjs` → 上传 `dist/console.zip` 到 `console-prod`。
-- **测试**：`node --test fc/redirect/test/redirect.test.js`（要显式文件路径；真实子进程 + mock 网关，11 例）。
+- **测试**：`node --test fc/redirect/test/redirect.test.js`（要显式文件路径；真实子进程 + mock 网关，15 例）。
 
 ### 健康查询 / 冒烟
 
@@ -119,19 +120,22 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 - **任何函数不回显/不记录请求头**（含明文库密码与各类 access key）；`Location` 只取库里 `long_url`，请求不参与拼接。
 - 文档断言要有出处；查不到出处的计划挂账别编。
 - 破坏性 / 共享库写入需用户明确批准。
+- **0012 迁移前的备份表 `visit_bak_0012`（158 行，RLS 已 enable+force+revoke，anon 直连 401）暂留线上库**，作为列改名的回滚依据；确认新包上线后可 `drop table visit_bak_0012;` 清掉。
 
 ## 7. 待办（下一个 AI 的起点）
 
-### 7.1 地理富化（设计已定稿，任务 #41–#44）
+### 7.1 地理富化（数据面已上线，富化函数待做）
 
-按 `docs/geo-enrichment.md` 实现，四步：
+按 `docs/geo-enrichment.md` 实现，四步 —— **前 3 步 + 第 4 步的契约/兜底已上线**：
 
-1. **#41 迁移 `0012_geo_location.sql`**：`visit_inbox.remote_addr`；`visit` 加 `remote_addr` + 重命名 `country/region/city`→`country_name/region_name/city_name` + 加 `country_code/lat/lon/timezone` + 部分索引 `visit_pending_location_idx`；三个 RPC `visits_pending_location` / `apply_visit_locations` / `retire_remote_addr`（只授 service_role）。
-2. **#42 跳转函数与 drain 带上 `remote_addr`**：`fc/redirect/index.js` 的 visit payload 加 `remote_addr: clientIp(req)`；`0006` 的 `drain_visit_inbox` insert 多写一列。
-3. **#43 富化函数 `fc/geo-enrich/`**：**事件函数**（`exports.handler`），双网络，定时触发器每分钟（`CRON_TZ=Asia/Shanghai 0 * * * * *`，超时 ≥60s，内存 ≥512MB）；mmdb 放 `/tmp`（冷启动或满 30 天重下，失败 1 小时退避）；拉批 → 本地查 IP → 回写 → 清空 `remote_addr`；日志不得出现 IP。
-4. **#44 契约 + 兜底**：`visit_json` 的 `visitLocation` 由恒 null 改为读列（见 geo-enrichment §6）；纯 SQL cron 做 7 天硬留存（`retire_remote_addr`）。
+1. ✅ **#41 迁移 `0012_geo_location.sql`**（2026-11-10 应用，15 条语句）：`visit_inbox.remote_addr`；`visit` 加 `remote_addr` + `country/region/city` 正名为 `country_name/region_name/city_name` + 加 `country_code/lat/lon/timezone`；部分索引 `visit_pending_location_idx`；三个 RPC `visits_pending_location` / `apply_visit_locations` / `retire_remote_addr`（只授 service_role）。
+2. 🔶 **#42 跳转函数与 drain 带上 `remote_addr`**：库侧已上线（`drain_visit_inbox` 覆盖 0006 同名函数）；**跳转函数代码已改完、单测 15/15、`dist/redirect.zip` 已重打包，待上传 FC**（他操作）。
+3. ⬜ **#43 富化函数 `fc/geo-enrich/`**：**事件函数**（`exports.handler`），双网络，定时触发器每分钟（`CRON_TZ=Asia/Shanghai 0 * * * * *`，超时 ≥60s，内存 ≥512MB）；mmdb 放 `/tmp`（冷启动或满 30 天重下，失败 1 小时退避）；拉批 → 本地查 IP → 回写 → 清空 `remote_addr`；日志不得出现 IP。**卡在 MaxMind License key**。
+4. ✅ **#44 契约 + 兜底**：`visit_json` 的 `visitLocation` 由恒 null 改为读列；`retire_remote_addr(7)` 由 pg_cron 每小时跑（jobid 9，`rxlink-retire-ip`）做 7 天硬留存。
 
 **前置**：MaxMind License key（用户申请，填 FC 环境变量）。**隐私口径**：IP 富化后立即清空，7 天硬上限。
+
+> 上传跳转包后要复核：`curl -i https://example.com/<真码>` → 302；库里 `select count(*) from visit where remote_addr is not null` 应在 1–2 分钟内 > 0（未上传新包前恒为 0，因为线上跑的还是老版本）。
 
 ### 7.2 发布前置 / 云上清理（用户动作，#40）
 

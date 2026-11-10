@@ -179,6 +179,10 @@ const server = http.createServer(async (req, res) => {
     ua: clip(req.headers['user-agent'], 512),
     referer: clip(req.headers['referer'], 1024),
     visited_url: clip(fullUrl(req), 2048),
+    // 原始 IP 只在 visit.remote_addr 短暂留存：富化函数写完定位结果后清空，
+    // 7 天硬上限由 retire_remote_addr() 兜底（见 docs/geo-enrichment.md §7）。
+    // x-forwarded-for 可被伪造成长串，所以截断到 64。
+    remote_addr: clip(clientIp(req), 64) || null,
     occurred_at: new Date().toISOString(),
   };
 

@@ -1,7 +1,11 @@
 # 地理富化设计（2026-11-10 定案）
 
-> 状态：**设计定稿，待实现**。存储方案 A（mmdb 放 FC 实例 /tmp）；IP 口径「短暂留存」已拍板。
-> 前置：MaxMind License key（用户申请，填 FC 环境变量）；生产需先升付费版（已有阻塞项）。
+> 状态：**数据面已实现并上线（§4 / §6 / §7，迁移 `0012_geo_location.sql`），富化函数待实现（§5）**。
+> §4 = 迁移 0012（15 条语句，2026-11-10 应用）；§6 = `visit_json` 契约改读列（同在 0012）；§7 = `retire_remote_addr` 兜底（cron jobid 9，每小时）。
+> §5 富化函数 `fc/geo-enrich/` 未实现，**卡在 MaxMind License key**（他申请）。
+> 跳转函数侧（#42）：代码已改完、单测 15/15，`dist/redirect.zip` 已重打包，**待上传 FC**（他操作）。
+> 前置：MaxMind License key；生产需先升付费版（已有阻塞项）。
+> 迭代记录见 `docs/iteration-plan.md` I7 / B7。
 
 ## 1. 结论与出处
 
@@ -76,6 +80,11 @@ create index visit_pending_location_idx on visit (occurred_at) where remote_addr
 ```
 
 > 重命名在分区父表上执行，会传播到既有分区；三列当前无数据，无迁移风险。
+
+> **实现差异（2026-11-10 落地）**：
+> - 三次重命名包在 `DO` 块里做存在性判断（`pg_attribute` 查 `attname`），脚本可重复执行不报错。
+> - `apply_visit_locations` 的返回值改为**实际更新行数**（`GET DIAGNOSTICS row_count` 累加），而不是「处理了几条」——调用方据此知道真正落了几条。
+> - 迁移同时覆盖了 `drain_visit_inbox`（加 `remote_addr` 一列）与 `visit_json`（§6）——原函数所在文件 0006/0009 是已应用历史，不改，只在新文件里覆盖。
 
 ### 4.1 RPC
 
