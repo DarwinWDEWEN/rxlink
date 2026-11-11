@@ -255,6 +255,24 @@
 
 ---
 
+## I8 —— M2 收尾批次（R1–R8）
+
+> **状态：已上线并验收（2026-11-11）。** 迁移 0015–0017、跳转函数 R1/R2/R3/R8、兼容层 R4/R6/R7、cron R5 全部落地；R9/R10 另立 I9/I10。
+> 设计：`docs/i8-m2-closure-design.md`；差距清单：`docs/shlink-feature-checklist.md`；验证记录：`docs/verification/i8-results.md`。
+
+**目标**：补齐 shlink 功能清单里 M2 阶段的差距项（默认 404 页 / 追踪像素 / robots.txt / 追踪开关 / 单步建链 / 访问导出 / key 过期 / 过期短链清理）。
+
+**范围**
+
+1. **迁移（已应用）**：`0015`（`api_key.expires_at` + `compat_auth` 覆盖）、`0016`（`robots_crawlable_codes`）、`0017`（`delete_expired_short_urls`）；应用前建库内快照，应用后逐条断言。
+2. **跳转函数（R1/R2/R3/R8）**：`fc/redirect/index.js` + `ipmat.js`；404 返回内联 HTML（有回退仍 302）、`/{code}/track` 1×1 gif 像素（命中才记）、`robots.txt`、HEAD 不记访问、`DISABLE_*` 追踪开关。
+3. **兼容层（R4/R6/R7）**：拆出 `handler.ts`；`GET /short-urls/shorten`（header 或 `?apiKey=`，`format=txt`/Accept）、`GET /visits/export`（CSV，rxlink 扩展端点）、过期 key 401。部署改走 `scripts/build-compat-function.mjs` 单文件包。
+4. **cron R5**：jobid 10 `rxlink-expired`，每日 GMT 20:00 软删过期/超次短链。
+
+**出口判据**：见 B8。
+
+---
+
 # 【B】验收清单
 
 > 规则：每条都要附**证据**（命令输出 / 截图 / SQL 结果），只写「已完成」不算。上一轮有未勾项，下一轮不启动。
@@ -354,6 +372,27 @@
 
 ---
 
+## B8 —— I8 M2 收尾批次（R1–R8）
+- [x] 迁移 0015–0017 逐条应用成功（2026-11-11），应用前建 `api_key_bak_20261111` / `funcdef_bak_20261111`
+- [x] 0015 断言：过期 key → `compat_auth` 返回 null；改未来时间 → 返回非 null
+- [x] 0016 对账：`robots_crawlable_codes('example.com')` = `{9e6h3}`，与直接查询一致；不存在域名返回空
+- [x] 0017 断言：临时过期/超次两行 dry-run 只列不改 → 真跑后 `enabled=false` → 临时行已删
+- [x] cron job 10 `rxlink-expired`（`0 20 * * *`）active
+- [x] 跳转函数单测 40/40（`ipmat` 8 + `redirect` 32）
+- [x] 兼容层单测 15/15；`deno check` 全绿（含构建产物）
+- [x] 线上 R1：`/nosuch` 404 HTML（invalid-short-code）、`/a/b` 与 `/` 404 HTML（404 页）；孤儿分类 `invalid_short_url`/`regular_404`/`base_url`
+- [x] 线上 R2：`/2b9yj/track` 200 gif 43B 且落库 `redirect_url=NULL`；`/nosuch/track` 与 HEAD 不记访问
+- [x] 线上 R3：`/robots.txt` 200 text/plain，`User-agent: *` + `Allow: /9e6h3` + `Disallow: /`
+- [x] 线上 R8：HEAD `/2b9yj` 不记访问（`visits_count` 21→22，唯一新增是像素那条）
+- [x] 线上 R4：`shorten` JSON / `format=txt` / `?apiKey=` 三形态 200
+- [x] 线上 R7：`/visits/export` 200 CSV，`visitLocation` → `CN / Shanghai / Changning`
+- [x] 线上 R6：过期 key → 401「has expired」
+- [x] compat 单文件部署包上线（`functions-cli … -d supabase/functions/compat/dist`，status ACTIVE）
+- [x] 测试数据清理（临时 key、3 条短链；库恢复 2 key / 9 短链）
+- [x] 验收归档：`docs/verification/i8-results.md`
+
+---
+
 # 【C】整体迭代进度清单
 
 > 这是唯一需要频繁更新的表。每轮结束后改这里的「状态 / 实际起止 / 备注」，并在下方变更记录加一行。
@@ -403,3 +442,4 @@
 | 2026-11-11 | 采纳用户两条建议：① mmdb 改为随包分发（brotli q6 → 52.35MB，走 FC Layer，运行时不联网、不出公网，冷启动 15.5s→1.0s，省每月约 29 元出网流量；新增 `build-geoip-bundle.mjs` / `build-geo-enrich-fc.mjs` 两个可复现构建脚本）② 定时触发器由每分钟改每小时（批处理上限 5→20 批，另加 45s 时间预算防超时）；单测 20→24 例 |
 | 2026-11-11 | I7 主体完成：跳转包已上传（线上实测有真实流量带 remote_addr）；**发现并修 `apply_visit_locations` 回写失配** —— PostgREST 的 timestamptz 只有毫秒精度，`(id, occurred_at)` 双条件对亚毫秒行必然失配（实测 0 行、IP 不清）→ 新增 `0013` 改为只按 `id` 匹配（id 全局唯一）+ 单条 set-based UPDATE；**换源 MaxMind → DB-IP City Lite**（MaxMind 免费版「仅个人使用」不适配对外服务，DB-IP 免注册免 key 且 CC BY 4.0 允许商用，代价是无 time_zone 字段）；`fc/geo-enrich/` 实现完成（lib 纯逻辑 + index handler，20 例单测全绿），真实 mmdb 端到端跑通（拉批 15 / 回写 15 / 369ms，库内 location 落、IP 清零）；`dist/geo-enrich.zip` 已打包待部署 |
 | 2026-11-11 | I7 上线与收尾：用户部署 FC 富化函数（Layer + 代码包 + 环境变量 + 每小时触发器），手动执行 `{"ok":true,"batches":1,"pulled":275,"updated":275}`，库内 291 行有地理结果、`ip_pending=0`；**新增 `0014`** 覆盖 `drain_visit_inbox`，落库后立即清空 `visit_inbox.remote_addr`（入队侧 IP 留存从最长 1 天 → 分钟级，线上 inbox 持 IP 行 291→0），DO 块断言「inbox 清空 + visit 仍拿到 IP」通过；真实流量端到端探针闭环（`x-forwarded-for: 8.8.8.8` → US·California·Mountain View）；**DB-IP 署名**实现在 `fc/console/index.js` 注入页脚（不重编 Angular，7 例单测全绿），`dist/console.zip` 已重打包待上传；权限复核：visit/visit_inbox 均 force RLS + 0 policy，anon/authenticated 无表级与列级授权；`design/`（另一任务产物，21MB）移出版本控制，文件保留在工作区 |
+| 2026-11-11 | I8 收尾批次完成并验收：迁移 0015–0017 应用 + 断言（备份表已建）、cron job 10 `rxlink-expired`；跳转函数 R1/R2/R3/R8（404 HTML / 追踪像素 / robots.txt / 追踪开关，单测 40/40）与兼容层 R4/R6/R7（shorten / 访问导出 / key 过期，单测 15/15）上线；compat 部署改单文件构建包（`scripts/build-compat-function.mjs`，消除多文件歧义）；线上 R1–R8 全通、测试数据已清；git `2437179`；归档 `docs/verification/i8-results.md` |
