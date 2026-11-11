@@ -1,9 +1,13 @@
 // rxlink 跳转函数（FC Web 函数，零依赖）
 // 运行时要求 Node.js 18+（用内置 fetch）；启动命令 `node index.js`，监听 0.0.0.0:${FC_SERVER_PORT:-9000}
 // 环境变量：SUPABASE_URL、SUPABASE_SERVICE_ROLE_KEY，可选 VISITOR_SALT / CACHE_POLL_MS / CACHE_SNAPSHOT_LIMIT
+// 追踪开关（R8，默认全关）：DISABLE_TRACK_PARAM / DISABLE_TRACKING / DISABLE_TRACKING_FROM /
+//   DISABLE_REFERRER_TRACKING / DISABLE_UA_TRACKING / DISABLE_IP_TRACKING
+// robots（R3）：ROBOTS_ALLOW_ALL_SHORT_URLS
 const http = require('http');
 const crypto = require('crypto');
 const cache = require('./cache');
+const ipmat = require('./ipmat');
 
 const BASE = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -15,8 +19,26 @@ const INBOX_PATH = '/rest/v1/visit_inbox';
 const SEQ_PATH = '/rest/v1/rpc/link_seq';
 const SNAPSHOT_PATH = '/rest/v1/rpc/snapshot_short_links';
 const FALLBACK_PATH = '/rest/v1/rpc/not_found_redirects';
+const ROBOTS_PATH = '/rest/v1/rpc/robots_crawlable_codes';
 const CODE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const PORT = Number(process.env.FC_SERVER_PORT || 9000);
+
+// R8 追踪开关：默认值与 shlink 一致（全关），命中即不记访问或置空字段
+const TRACK = {
+  disableParam: process.env.DISABLE_TRACK_PARAM || '',
+  disableAll: process.env.DISABLE_TRACKING === 'true',
+  from: (process.env.DISABLE_TRACKING_FROM || '').split(',').map((s) => s.trim()).filter(Boolean),
+  disableReferrer: process.env.DISABLE_REFERRER_TRACKING === 'true',
+  disableUa: process.env.DISABLE_UA_TRACKING === 'true',
+  disableIp: process.env.DISABLE_IP_TRACKING === 'true',
+};
+// R3 robots：默认列 crawlable 短码 + Disallow: /；开关打开后只 Disallow: /rest/
+const ROBOTS_ALLOW_ALL = process.env.ROBOTS_ALLOW_ALL_SHORT_URLS === 'true';
+// 1×1 透明 GIF89a（43 字节），追踪像素用
+const PIXEL = Buffer.from(
+  'R0lGODlhAQABAIAAAAAAAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==',
+  'base64',
+);
 
 function gateway(path, body, prefer) {
   return fetch(BASE + path, {
@@ -134,10 +156,121 @@ function fillPlaceholders(template, domain, originalPath) {
   }
 }
 
+// R8：命中即不记访问。HEAD 由 shlink 的 ImplicitHeadMiddleware 转发后按 HEAD 处理，同样不记。
+function shouldSkipTracking(req, query, ip) {
+  if (req.method === 'HEAD') return true;
+  if (TRACK.disableAll) return true;
+  if (TRACK.disableParam && query.has(TRACK.disableParam)) return true;
+  if (ip && ipmat.ipMatchesGroups(ip, TRACK.from)) return true;
+  return false;
+}
+
+// 访问明细：追踪开关置空对应字段（visitor_key 保留——shlink 的 disableIpTracking 也只清 IP 本身）
+function buildVisit(req, ip) {
+  return {
+    visitor_key: visitorKey(req),
+    ua: TRACK.disableUa ? null : clip(req.headers['user-agent'], 512),
+    referer: TRACK.disableReferrer ? null : clip(req.headers['referer'], 1024),
+    visited_url: clip(fullUrl(req), 2048),
+    // 原始 IP 只在 visit.remote_addr 短暂留存：富化函数写完定位结果后清空，
+    // 7 天硬上限由 retire_remote_addr() 兜底（见 docs/geo-enrichment.md §7）。
+    // x-forwarded-for 可被伪造成长串，所以截断到 64。
+    remote_addr: TRACK.disableIp || !ip ? null : clip(ip, 64),
+    occurred_at: new Date().toISOString(),
+  };
+}
+
+// 像素路由的解析：命中/未命中都返回 gif，所以上游失败也按未命中降级（不记访问）
+async function lookupForPixel(code, domain) {
+  let entry = cache.ready() ? cache.lookup(code, domain) : null;
+  if (!cache.ready() || (entry && entry.visitsLimited)) {
+    try {
+      entry = await resolve(code, domain);
+    } catch {
+      return null;
+    }
+  }
+  return entry;
+}
+
+// R1：无回退配置时的内联 404 页（shlink 模板的精简版，去掉品牌与 favicon）
+const HTML_STYLE = [
+  '*, :before, :after {box-sizing: border-box;}',
+  'html, body {margin: 0; padding: 0; height: 100%; font-size: 1rem; font-weight: 400; line-height: 1.5;',
+  '  color: #212529; text-align: center;',
+  '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;}',
+  'p {margin-bottom: 20px;}',
+  'hr {margin-top: 1rem; margin-bottom: 1rem; border: 0; border-top: 1px solid rgba(0, 0, 0, .1);}',
+  '.app {min-height: 100%; display: flex; align-items: center; justify-content: center; flex-flow: column;}',
+  '.container {width: 100%; max-width: 1140px; padding: 0 20px;}',
+].join('\n');
+
+function htmlPage(title, body) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>${title}</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+${HTML_STYLE}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <main class="container">
+${body}
+    </main>
+  </div>
+</body>
+</html>
+`;
+}
+
+function notFoundHtml() {
+  return htmlPage(
+    'Not Found',
+    '      <h1>404</h1>\n      <hr>\n      <h3>Page not found.</h3>\n      <p>The page you requested could not be found.</p>',
+  );
+}
+
+function invalidShortCodeHtml() {
+  return htmlPage(
+    'Invalid Short URL',
+    "      <h1>Oops!</h1>\n      <hr>\n      <p>This short URL doesn't seem to be valid.</p>\n      <p>Make sure you included all the characters, with no extra punctuation.</p>",
+  );
+}
+
+// R3：robots.txt。默认列 crawlable 短码 + Disallow: /；开关打开后只 Disallow: /rest/。
+async function replyRobots(res, domain) {
+  const lines = [
+    '# For more information about the robots.txt standard, see:',
+    '# https://www.robotstxt.org/orig.html',
+    '',
+    'User-agent: *',
+  ];
+  if (!ROBOTS_ALLOW_ALL) {
+    let codes = [];
+    try {
+      const r = await gateway(ROBOTS_PATH, { p_authority: domain }, 'return=representation');
+      if (r.ok) {
+        const body = await r.json();
+        // PostgREST 对 returns text[] 的 RPC 直接返回数组
+        if (Array.isArray(body)) codes = body.filter((c) => typeof c === 'string');
+      }
+    } catch {
+      // RPC 失败：降级为不允许任何短码，仍有 Disallow: / 兜底
+    }
+    for (const c of codes) lines.push(`Allow: /${c}`);
+  }
+  lines.push(ROBOTS_ALLOW_ALL ? 'Disallow: /rest/' : 'Disallow: /');
+  reply(res, 200, lines.join('\n') + '\n', { 'Content-Type': 'text/plain; charset=utf-8' });
+}
+
 // 404 才查回退配置（低频路径，不进快照）：域名级优先、缺省回落全局由 SQL coalesce 完成。
-// 查询失败或没配置都降级裸 404，回退能力不能反过来拖垮主链路。
-async function replyNotFound(req, res, visit, orphanType, timing, snapshot) {
-  recordVisit({ ...visit, orphan_type: orphanType });
+// 查询失败或没配置都降级到内联 HTML 404 页（R1），回退能力不能反过来拖垮主链路。
+async function replyNotFound(req, res, visit, orphanType, timing, snapshot, record) {
+  if (record) recordVisit({ ...visit, orphan_type: orphanType });
   const headers = { 'Server-Timing': timing, 'X-Link-Snapshot': snapshot };
   try {
     const r = await gateway(FALLBACK_PATH, { p_authority: hostname(req) }, 'return=representation');
@@ -156,9 +289,10 @@ async function replyNotFound(req, res, visit, orphanType, timing, snapshot) {
       }
     }
   } catch {
-    // 降级裸 404
+    // 降级 HTML 404
   }
-  return reply(res, 404, 'not found', headers);
+  const html = orphanType === 'invalid_short_url' ? invalidShortCodeHtml() : notFoundHtml();
+  return reply(res, 404, html, { ...headers, 'Content-Type': 'text/html; charset=utf-8' });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -169,22 +303,32 @@ const server = http.createServer(async (req, res) => {
     return reply(res, 500, 'not configured');
   }
 
-  const path = new URL(req.url, 'http://placeholder').pathname;
-  const code = path.startsWith('/') ? path.slice(1) : path;
+  const url = new URL(req.url, 'http://placeholder');
+  const path = url.pathname;
+  const query = url.searchParams;
   const domain = hostname(req);
+  const ip = clientIp(req);
+  const skipTracking = shouldSkipTracking(req, query, ip);
+  const visit = buildVisit(req, ip);
+
+  // R3 robots.txt：不记访问
+  if (path === '/robots.txt') {
+    return replyRobots(res, domain);
+  }
+
+  // R2 追踪像素：命中才记访问，未命中/HEAD 不记，都返回 1×1 gif
+  const trackMatch = /^\/([A-Za-z0-9_-]{1,64})\/track$/.exec(path);
+  if (trackMatch) {
+    const entry = await lookupForPixel(trackMatch[1], domain);
+    if (entry && withinValidity(entry, Date.now()) && !skipTracking) {
+      recordVisit({ ...visit, short_url_id: entry.id, redirect_to: null });
+    }
+    return reply(res, 200, PIXEL, { 'Content-Type': 'image/gif' });
+  }
+
+  const code = path.startsWith('/') ? path.slice(1) : path;
   const started = Date.now();
   const stats0 = cache.stats();
-  const visit = {
-    visitor_key: visitorKey(req),
-    ua: clip(req.headers['user-agent'], 512),
-    referer: clip(req.headers['referer'], 1024),
-    visited_url: clip(fullUrl(req), 2048),
-    // 原始 IP 只在 visit.remote_addr 短暂留存：富化函数写完定位结果后清空，
-    // 7 天硬上限由 retire_remote_addr() 兜底（见 docs/geo-enrichment.md §7）。
-    // x-forwarded-for 可被伪造成长串，所以截断到 64。
-    remote_addr: clip(clientIp(req), 64) || null,
-    occurred_at: new Date().toISOString(),
-  };
 
   if (code === '' || !CODE_RE.test(code)) {
     // shlink NotFoundType：根路径=base_url；路由形状不合法=regular_404
@@ -192,6 +336,7 @@ const server = http.createServer(async (req, res) => {
       req, res, visit, code === '' ? 'base_url' : 'regular_404',
       `resolve;dur=0;cached=${stats0.cached ? 1 : 0}`,
       `${stats0.rows}|${stats0.seq}|${stats0.age}`,
+      !skipTracking,
     );
   }
 
@@ -214,7 +359,7 @@ const server = http.createServer(async (req, res) => {
 
   if (!entry || !withinValidity(entry, Date.now())) {
     // shlink NotFoundType：路由命中但码不存在/失效=invalid_short_url
-    return replyNotFound(req, res, visit, 'invalid_short_url', timing, snapshot);
+    return replyNotFound(req, res, visit, 'invalid_short_url', timing, snapshot, !skipTracking);
   }
 
   let location = entry.longUrl;
@@ -231,12 +376,15 @@ const server = http.createServer(async (req, res) => {
     // 长链里有非法请求头字符时 writeHead 会抛，不能让整个实例崩掉
     return reply(res, 502, 'bad redirect target', { 'Server-Timing': timing });
   }
-  // 缓存命中不豁免统计：每次请求仍然入队
-  recordVisit({ ...visit, short_url_id: entry.id, redirect_to: clip(location, 2048) });
+  // 缓存命中不豁免统计：每次请求仍然入队（HEAD / 命中开关除外）
+  if (!skipTracking) {
+    recordVisit({ ...visit, short_url_id: entry.id, redirect_to: clip(location, 2048) });
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`redirect listening on ${PORT}`);
+  // 端口可能是 0（随机），日志打实际绑定端口，便于测试与排查
+  console.log(`redirect listening on ${server.address().port}`);
   if (!SALT) console.warn('VISITOR_SALT not set, visitor_key will be null');
 });
 

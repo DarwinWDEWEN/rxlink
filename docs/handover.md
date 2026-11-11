@@ -50,7 +50,8 @@ rxlink/                    # 已纳入 git（基线提交 3c95212，2026-11-10�
 ├─ supabase/
 │  ├─ migrations/        # 0001–0014（已应用历史，不改不删；新变更写新编号）
 │  ├─ functions/
-│  │  ├─ compat/index.ts # 兼容层（/rest/v3，23 方法）
+│  │  ├─ compat/handler.ts # 兼容层逻辑（/rest/v3，23 方法 + R4/R7），导出 handleRequest
+│  │  ├─ compat/index.ts # 本地入口（薄）；部署用 scripts/build-compat-function.mjs 生成单文件 dist/index.ts
 │  │  ├─ console/        # Edge Function 形态的控制台（已被 FC 函数取代，闲置）
 │  │  └─ .env            # gitignore，凭据只在这里
 │  └─ config.toml

@@ -90,7 +90,26 @@ select cron.schedule('rxlink-prune','0 19 * * *','select prune_dead_links(180, f
 ```bash
 nvm use 24
 bash scripts/new-api-key.sh <name>   # name: 字母/数字/_/-，1-40 字
+bash scripts/new-api-key.sh <name> --expires-at 2027-01-01T00:00:00Z   # 可选过期时间
 ```
+
+### 3.4 访问明细导出 / 单步建链（兼容层）
+
+```bash
+key='<rxl_…>'   # 只写变量名，别把明文写进文档/日志
+base='https://your-project-ref.supabase.co/functions/v1/compat/rest/v3'
+
+# R7 导出访问明细 CSV（8 列；scope 可选 non-orphan/short/tag/domain/orphan）
+curl -s -H "X-Api-Key: $key" "$base/visits/export?itemsPerPage=5000" -o visits.csv
+curl -s -H "X-Api-Key: $key" "$base/visits/export?scope=short&code=abcde" -o one.csv
+
+# R4 单步建链：JSON / 纯文本 / query 鉴权（shlink 契约里的 query 例外）
+curl -s -H "X-Api-Key: $key" "$base/short-urls/shorten?longUrl=https%3A%2F%2Fexample.com%2Fa"
+curl -s -H "X-Api-Key: $key" "$base/short-urls/shorten?longUrl=https%3A%2F%2Fexample.com%2Fa&format=txt"
+curl -s "$base/short-urls/shorten?longUrl=https%3A%2F%2Fexample.com%2Fa&apiKey=$key"
+```
+
+说明：`/short-urls/shorten` 在 shlink 契约内（控制台不调它）；`/visits/export` 是 rxlink 扩展端点，控制台 UI 没有导出按钮，用 curl / 脚本调。
 
 ## 4. 加一个新短链域名（SOP）
 
@@ -148,10 +167,14 @@ bash scripts/new-api-key.sh <name>   # name: 字母/数字/_/-，1-40 字
 
 ```bash
 set -a; source supabase/functions/.env; set +a
-SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli deploy compat --no-verify-jwt
+node scripts/build-compat-function.mjs   # 把 handler.ts 打成单文件 dist/index.ts
+SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli deploy compat \
+  -d supabase/functions/compat/dist --no-verify-jwt
 ```
-- 回滚：回退 `supabase/functions/compat/index.ts` 重新 deploy。
-- 验证：`curl …/functions/v1/compat/rest/v3/health` → `{"status":"pass","version":"4.0.0"}`。
+- 为什么多一步构建：`functions-cli` 的部署包以入口文件为准，多文件/静态资源支持有歧义（I5 实测 `.txt` 进不了部署包，官方文档又写 `index.ts + foo.ts` 可多文件）。部署统一走单文件构建产物，消除歧义；本地开发与单测仍直接用 `handler.ts`。
+- 改代码后：`handler.ts` 是唯一改动点；`index.ts` 只是本地入口，`dist/index.ts` 由脚本生成（gitignore）。
+- 回滚：`git checkout <旧 commit> -- supabase/functions/compat/handler.ts` → 重新 build → 重新 deploy；或回退整个 commit 后同样走一遍。
+- 验证：`curl …/functions/v1/compat/rest/v3/health` → `{"status":"pass","version":"4.0.0"}`；再带 key 打一个真实路由（如 `GET /rest/v3/short-urls?itemsPerPage=1`）。
 
 ### 5.4 数据库迁移
 
