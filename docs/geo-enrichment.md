@@ -1,11 +1,46 @@
-# 地理富化设计（2026-11-10 定案）
+# 地理富化设计（2026-11-10 定案，2026-11-11 换源修订）
 
-> 状态：**数据面已实现并上线（§4 / §6 / §7，迁移 `0012_geo_location.sql`），富化函数待实现（§5）**。
-> §4 = 迁移 0012（15 条语句，2026-11-10 应用）；§6 = `visit_json` 契约改读列（同在 0012）；§7 = `retire_remote_addr` 兜底（cron jobid 9，每小时）。
-> §5 富化函数 `fc/geo-enrich/` 未实现，**卡在 MaxMind License key**（他申请）。
-> 跳转函数侧（#42）：代码已改完、单测 15/15，`dist/redirect.zip` 已重打包，**待上传 FC**（他操作）。
-> 前置：MaxMind License key；生产需先升付费版（已有阻塞项）。
-> 迭代记录见 `docs/iteration-plan.md` I7 / B7。
+> 状态：**全部已实现并验证**（§4 数据面 + §5 富化函数 + §6 契约 + §7 兜底）。
+> 唯一未完成的是 **FC 富化函数的部署**（控制台建函数 + 挂定时触发器，用户动作）。
+>
+> - §4 = 迁移 `0012_geo_location.sql`（15 条语句，2026-11-10 应用）+ `0013_geo_location_id_match.sql`（修回写失配，2 条）
+> - §5 = `fc/geo-enrich/`（20 例单测全绿 + 真实 mmdb 端到端跑通 15/15 行）
+> - §6 = `visit_json` 契约改读列（同在 0012）
+> - §7 = `retire_remote_addr` 兜底（cron jobid 9，每小时）
+> - 迭代记录见 `docs/iteration-plan.md` I7 / B7
+
+---
+
+## 0. 修订：数据源从 MaxMind 换成 DB-IP（2026-11-11）
+
+原设计用 **MaxMind GeoLite2 + License key**。实施前复核许可口径时发现问题：
+
+> MaxMind 账号页原文：*"Lightweight geolocation data ... **Free for personal use**. A commercial license is available for basic commercial use cases."*
+
+rxlink 的定位是**对外提供服务、可能收费**（2026-11-11 用户确认），免费 GeoLite2 的「仅个人使用」口径不适用；付费 GeoLite2 另计成本，且要管一个密钥。
+
+**换成 DB-IP "IP to City Lite"**（实测 2026-11-11 可下载，HTTP 200，57MB）：
+
+| | MaxMind GeoLite2 City | DB-IP City Lite |
+|---|---|---|
+| 下载 | 需账号 + key（实测假 key → 401） | **免注册免 key**，文件名带年月可拼 URL |
+| 格式 | MMDB | MMDB（**同一个 `maxmind` npm 包读，代码零改动**） |
+| 许可 | 免费版仅个人使用 | CC BY 4.0，**明确允许商用** |
+| 更新 | 每周二/五 | 每月 |
+| 署名义务 | 需要 | 需要（"IP Geolocation by DB-IP"） |
+| 附加义务 | 新版发布 30 天内删旧副本 | 无 |
+
+**取舍**：
+
+1. **省掉一个密钥** —— 不再有 `MAXMIND_LICENSE_KEY` 要进 FC 环境变量，也少一处泄露面。`GEO_MMDB_URL` 环境变量保留，换源不用改代码。
+2. **更新频率降到月更** → `GEO_MMDB_MAX_AGE_DAYS` 设 **14 天**（不是原设计的 30 天：DB-IP 月更，14 天能保证拿到当期版本；30 天是 MaxMind EULA「新版发布 30 天内删旧副本」的上限边界，不是最佳值）。
+3. **DB-IP 没有 `time_zone` 字段** → `visit.timezone` 恒为 NULL。
+   - 契约 `ShlinkVisitLocation.timezone` 类型是 `string | null`，**允许 null**；
+   - 控制台只渲染 country/region/city/latitude/longitude，**不渲染 timezone**（已从构建产物核实）；
+   - 要时区就把 `GEO_MMDB_URL` 指向带 time_zone 的库（IP2Location LITE / GeoLite2）。
+4. **署名义务**：DB-IP 要求在展示/使用结果的页面标注 "IP Geolocation by DB-IP"。控制台若展示地理位置，需在页脚或说明里加一行 —— **待定，用户决定**。
+
+---
 
 ## 1. 结论与出处
 
@@ -85,6 +120,9 @@ create index visit_pending_location_idx on visit (occurred_at) where remote_addr
 > - 三次重命名包在 `DO` 块里做存在性判断（`pg_attribute` 查 `attname`），脚本可重复执行不报错。
 > - `apply_visit_locations` 的返回值改为**实际更新行数**（`GET DIAGNOSTICS row_count` 累加），而不是「处理了几条」——调用方据此知道真正落了几条。
 > - 迁移同时覆盖了 `drain_visit_inbox`（加 `remote_addr` 一列）与 `visit_json`（§6）——原函数所在文件 0006/0009 是已应用历史，不改，只在新文件里覆盖。
+>
+> **修订（2026-11-11，`0013_geo_location_id_match.sql`）**：0012 的 `apply_visit_locations` 用 `(id, occurred_at)` 双条件定位行，但 **PostgREST 把 timestamptz 序列化成毫秒精度**，微秒尾巴被截断；而 `visit.occurred_at` 是微秒精度。⇒ 凡是 `occurred_at` 不是毫秒对齐的行（SQL 侧造的数据、手工数据）永远匹配不上：实测 `apply_visit_locations` 返回 0 行、`remote_addr` 不被清空。
+> 生产流量走 JS `toISOString()`（毫秒精度）恰好对齐才侥幸没暴露。**修复：只按 `id` 匹配** —— `visit.id` 是父表上的 bigserial，序列跨分区共享 ⇒ 全局唯一（实测 173 行 / 173 个不同 id）；分区扫描仍走各分区 PK 索引的前导列 id，代价可接受。同时把逐行循环 UPDATE 改成单条 set-based UPDATE（一批 500 行从 500 次扫描降到 1 次）。
 
 ### 4.1 RPC
 
@@ -142,23 +180,32 @@ grant execute on function visits_pending_location(int), apply_visit_locations(js
   to service_role;
 ```
 
-## 5. 富化函数（`fc/geo-enrich/`）
+## 5. 富化函数（`fc/geo-enrich/`）—— 已实现
 
-- 形态：事件函数，`exports.handler = async (event, context) => { ... }`。
-- 依赖：`maxmind`（mmdb 读取）、`tar`（解压 .tar.gz）。部署时连同 `node_modules` 一起打 zip 上传。
-- 环境变量：`SUPABASE_URL`（内网）、`SUPABASE_SERVICE_ROLE_KEY`、`MAXMIND_LICENSE_KEY`（用户填）、可选 `GEO_MMDB_URL`（覆盖下载源，为方案 B 留口子）、`GEO_BATCH_LIMIT`（默认 500）、`GEO_MMDB_MAX_AGE_DAYS`（默认 30）。
+- 形态：事件函数，`exports.handler = async (event, context) => { ... }`；FC 控制台的**请求处理程序填 `index.handler`**（官方按「文件名.方法名」加载，运行时 bootstrap 调用，代码不需要自己起 HTTP 服务）。
+- 依赖：`maxmind`（mmdb 读取）。DB-IP 是单个 `.mmdb.gz`，用 Node 内置 `zlib` 解压即可，**不需要 tar**。部署时连同 `node_modules` 一起打 zip（`dist/geo-enrich.zip`，55KB）。
+- 环境变量：`SUPABASE_URL`（FC 侧是 VPC 内网地址）、`SUPABASE_SERVICE_ROLE_KEY`、`GEO_MMDB_PATH`（默认 `/tmp/dbip-city-lite.mmdb`）、`GEO_MMDB_URL`（覆盖下载地址，换源用）、`GEO_MMDB_BASE`（覆盖下载源根路径）、`GEO_BATCH_LIMIT`（默认 500）、`GEO_MAX_BATCHES`（默认 5）、`GEO_MMDB_MAX_AGE_DAYS`（默认 14）、`GEO_DOWNLOAD_BACKOFF_MS`（默认 3600000）。**不需要任何密钥。**
+- 代码结构：`lib.js`（纯逻辑，可单测）+ `index.js`（IO 与 handler，依赖注入便于测）。
 
 流程：
 
-1. `ensureMmdb()`：`/tmp/GeoLite2-City.mmdb` 不存在或 mtime 超过 30 天 → 下载
-   `https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=…&suffix=tar.gz`
-   → 解压 → 用 `maxmind.open` 校验；失败写 `/tmp/.mmdb_last_fail`，**1 小时内不重试**（避免打 MaxMind）。
+1. `ensureReader()`：`GEO_MMDB_PATH` 不存在或 mtime 超过 14 天 → 下载
+   `https://download.db-ip.com/free/dbip-city-lite-YYYY-MM.mmdb.gz`
+   → gunzip → 写临时文件再 rename（避免半截文件）→ `maxmind.open` 校验；失败写 `<path>.last_fail`，**1 小时内不重试**（避免打数据源）。
 2. `visits_pending_location(GEO_BATCH_LIMIT)` 拉批。
-3. 逐条 `reader.get(ip)`，组装 `[{id, occurred_at, country_code, country_name, region_name, city_name, lat, lon, timezone}]`。
+3. 逐条 `reader.get(ip)`：**先 `maxmind.validate(ip)` 再查**（`reader.get` 不校验，`'1.2.3'` 也会给出国家），异常与查不到一律当空。
 4. `apply_visit_locations(rows)` 回写。
-5. 日志：本批条数、命中数、mmdb 年龄；**不打印 IP**。
+5. 日志：只有计数（batches/pulled/updated/耗时/mmdb 字节数）；**不打印 IP**。下载 URL 在错误日志里会被抹掉（换带凭据的源时不会泄露）。
 
 > 未命中（私有 IP / 库中查不到）也要回写清空，否则会每轮重复捞；靠 7 天兜底防长期堆积。
+>
+> 一轮最多处理 `GEO_MAX_BATCHES` 批；某批返回行数 < limit 即认为拉干净，提前退出。
+
+**实测（2026-11-11，本机 + 真实库）**：
+
+- 20 例单测全绿（`node --test fc/geo-enrich/test/`）
+- 真实 mmdb 下载 → 解压（127MB）→ `maxmind.open` → 记录结构与 `locationOf` 预期一致
+- 端到端：拉批 15 行 / 回写 15 行 / 369ms；落库结果 `US·Virginia·Ashburn`、`HK·Central and Western·Sheung Wan`、`MA·Rabat`、`PL·Warsaw`；`remote_addr` 回写后全为 NULL
 
 ## 6. 契约（`visit_json`）
 
@@ -187,17 +234,23 @@ grant execute on function visits_pending_location(int), apply_visit_locations(js
 
 ## 8. 前置
 
-- **MaxMind 账号 + License key**（用户申请，填 FC 环境变量；仓库只留变量名）。
-- FC 富化函数：事件函数 + 定时触发器 + 双网络 + 超时 ≥60s + 内存 ≥512MB。
+- ~~MaxMind 账号 + License key~~ —— **已不需要**（换源为 DB-IP，见 §0）。
+- **FC 富化函数部署**（用户动作）：事件函数 + 定时触发器 + 双网络（公网 + VPC）+ 超时 ≥60s + 内存 ≥512MB。
+  - 请求处理程序填 `index.handler`；运行时选 Node.js 18/20；代码包 `dist/geo-enrich.zip`；
+  - 环境变量：`SUPABASE_URL`（**VPC 内网地址**）、`SUPABASE_SERVICE_ROLE_KEY`；
+  - 网络：允许访问 VPC = 是，允许函数访问公网 = 是（下载 mmdb 用公网）；
+  - 定时触发器：每分钟（`CRON_TZ=Asia/Shanghai 0 * * * * *`）；事件函数支持除 HTTP 外的所有触发器。
 - 付费版（已有阻塞项；方案 A 本身免费版可跑通）。
+- 署名：DB-IP 要求展示结果处标注 "IP Geolocation by DB-IP"（**待用户决定加在哪里**）。
 
 ## 9. 测试
 
-- **SQL**：造带 `remote_addr` 的 visit → `visits_pending_location` 命中；`apply_visit_locations` 写列并清空；`retire_remote_addr` 清旧；权限矩阵（anon 不可调）。
-- **跳转函数**：单测断言 inbox payload 含 `remote_addr`。
-- **富化函数**：单测（mock reader + mock RPC）覆盖命中 / 未命中 / mmdb 缺失；集成用真实 mmdb 跑一遍。
-- **契约**：`visit_json` 有位置 / 无位置两态。
-- **线上闭环**：造一条带 `remote_addr` 的 visit → 等定时 → 查库确认 location 落、`remote_addr` 清。
+- **SQL**（2026-11-10 已跑通）：造带 `remote_addr` 的 visit → `visits_pending_location` 命中；`apply_visit_locations` 写列并清空；`retire_remote_addr` 清旧；权限矩阵（anon 401 / service_role 200）。
+- **跳转函数**（已跑通）：单测断言 inbox payload 含 `remote_addr`，15/15。
+- **富化函数**（已跑通）：20 例单测（mock reader + mock RPC，覆盖命中 / 未命中 / 非法 IP / mmdb 缺失 / 下载失败退避 / 日志无 IP）；集成用真实 mmdb 跑一遍。
+- **契约**（已跑通）：`visit_json` 有位置 / 无位置两态；`remote_addr` 不出现在契约里。
+- **端到端**（2026-11-11 已跑通，本机 + 真实库）：15 行拉取 → 15 行回写 → 369ms；库内 location 落、`remote_addr` 清零。
+- **线上闭环**（待部署后）：FC 富化函数挂上定时触发器 → 等一轮 → 查库确认 location 落、`remote_addr` 清。
 
 ## 10. 不做
 
@@ -205,3 +258,5 @@ grant execute on function visits_pending_location(int), apply_visit_locations(js
 - 不长期存 IP。
 - 不抄 shlink 的 `geolocation_db_updates` 表（`shlink-migration-analysis.md` 已列 ❌）。
 - 不做固定公网 IP（NAT + EIP）—— 除非以后有 API 白名单需求。
+- 不接付费 GeoIP2 / GeoLite2 商用许可（除非将来精度或合规要求变）。
+- 不做时区（DB-IP 无 `time_zone` 字段；契约允许 null，控制台不渲染）。

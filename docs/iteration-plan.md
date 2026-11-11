@@ -241,7 +241,7 @@
    - 部分索引 `visit_pending_location_idx`（只装 `remote_addr` 非空的行）
    - 三个 RPC：`visits_pending_location` / `apply_visit_locations` / `retire_remote_addr`，只授 service_role
 2. **#42 跳转函数与 drain 带上 `remote_addr`**：`fc/redirect/index.js` 的 visit payload 加 `remote_addr`（取 `x-forwarded-for` 首元素，截断 64，无值写 null）；`drain_visit_inbox` 的 insert 多写一列（覆盖 0006 同名函数，其余逻辑一致）。
-3. **#43 富化函数 `fc/geo-enrich/`**：**事件函数**（`exports.handler`），双网络，定时触发器每分钟（`0 * * * * *` UTC，超时 ≥60s，内存 ≥512MB）；mmdb 放 `/tmp`（冷启动或满 30 天重下，失败 1 小时退避）；拉批 → 本地查 IP → 回写 → 清空 `remote_addr`；日志不得出现 IP。**待 MaxMind License key**。
+3. **#43 富化函数 `fc/geo-enrich/`**：**事件函数**（`exports.handler`，FC 请求处理程序填 `index.handler`），双网络，定时触发器每分钟（`0 * * * * *` UTC，超时 ≥60s，内存 ≥512MB）；mmdb 放 `/tmp`（冷启动或满 14 天重下，失败 1 小时退避）；拉批 → 本地查 IP → 回写 → 清空 `remote_addr`；日志不得出现 IP。**代码已完成并端到端验证**（2026-11-11），差 FC 部署；数据源为 DB-IP City Lite（免 key，允许商用，见 `geo-enrichment.md` §0）。
 4. **#44 契约 + 兜底**：`visit_json` 的 `visitLocation` 由恒 null 改为读列；`retire_remote_addr(7)` 由 pg_cron 每小时跑（jobid 9）做 7 天硬留存。
 
 **隐私口径**（与设计 §7 一致）：原始 IP 富化后立即清空；7 天硬上限由纯 SQL cron 兜底；IP 不进契约、不写日志、不进快照。
@@ -323,7 +323,7 @@
 - [x] inbox 积压阈值查询能返回结果（健康查询：pending=0/oldest=0/drain≈4s/seq=85）
 - [x] `docs/runbook.md` 覆盖加域名、回滚、三类故障排查（已建并核对命令）
 
-## B7 —— I7 地理富化数据面（#41/#42/#44）
+## B7 —— I7 地理富化（#41–#44）
 - [x] `0012_geo_location.sql` 15 条语句逐条应用成功（2026-11-10）
 - [x] 列改名传播到既有分区：`visit` / `visit_2026_11` / `visit_2027_01` 均已无 `country/region/city`
 - [x] 部分索引 `visit_pending_location_idx` 建在分区父表上
@@ -334,8 +334,13 @@
 - [x] 兜底 cron `rxlink-retire-ip`（jobid 9，每小时）已挂
 - [x] 跳转函数单测 15/15（含 4 条 remote_addr 新用例）
 - [x] 契约回归：`list_visits` / `visits_overview` 输出形状不变
-- [ ] **跳转函数新包上传 FC**（待他操作：`dist/redirect.zip`，控制台上传）
-- [ ] **#43 富化函数**（待 MaxMind License key）
+- [x] **跳转函数新包已上传 FC**（2026-11-11 确认：线上已有带 `remote_addr` 的真实流量行）
+- [x] **#43 富化函数代码完成**：`fc/geo-enrich/`（`lib.js` 纯逻辑 + `index.js` handler），20 例单测全绿
+- [x] **数据源换源**（2026-11-11）：MaxMind GeoLite2 → DB-IP City Lite（免费版仅个人使用，不适配对外服务；DB-IP 免 key 且允许商用）—— 详见 `geo-enrichment.md` §0
+- [x] **真实 mmdb 端到端跑通**（2026-11-11）：下载 → gunzip → `maxmind.open` → 拉批 15 行 / 回写 15 行 / 369ms；库内 location 落（US·Ashburn、HK·Sheung Wan、MA·Rabat、PL·Warsaw）、`remote_addr` 清零
+- [x] **`0013` 修回写失配**：PostgREST 的 timestamptz 只有毫秒精度，`(id, occurred_at)` 双条件匹配对亚毫秒行必然失配（实测 0 行、IP 不清）→ 改为只按 `id` 匹配（id 全局唯一）+ 单条 set-based UPDATE
+- [ ] **FC 富化函数部署**（待他操作：`dist/geo-enrich.zip`，建事件函数 + 定时触发器 + 双网络 + 环境变量）
+- [ ] **DB-IP 署名**（待他决定加在哪里："IP Geolocation by DB-IP"）
 
 ---
 
@@ -352,7 +357,7 @@
 | I4 | 统计读接口（B2） | **已验收** | I2、I3 | B4 全勾 | 2026-11-09 当日 | `0009` 五个 RPC + `compat` 8 条路由；概览对账、标签/域名/时间筛选、孤儿三类、删访问联动全通，见 `docs/verification/i4-results.md` |
 | I5 | 控制台补全（B3/B4） | **已验收** | I4 | B5 全勾 | 2026-11-09 → 2026-11-10 | `0010` 七个 RPC + 9 条路由；用户 FC 函数 `console-prod` + 证书，正式域名页面/资源/深链/SW/跨域 API 全通，见 `docs/verification/i5-results.md` |
 | I6 | 生产硬化 | **已验收** | I5 | B6 全勾 | 2026-11-10 当日 | 探针退场/prune 转真/压测(p95 416ms)/可观测/runbook/HTTPS 复测全通（B6 6/6；cdndev 放弃），见 `docs/verification/i6-results.md` |
-| I7 | 地理富化（#41–#44） | **进行中** | I6 | B7 全勾 | 2026-11-10 起 | #41 迁移 0012（15 条）+ #42 跳转/drain 带 remote_addr + #44 契约与兜底已上线；差**跳转包上传**（他）与 **#43 富化函数**（等 MaxMind key） |
+| I7 | 地理富化（#41–#44） | **进行中** | I6 | B7 全勾 | 2026-11-10 起 | #41 迁移 0012 + #42 跳转/drain 带 remote_addr + #44 契约与兜底已上线；跳转包已上传、真实流量带 IP；#43 富化函数代码完成并端到端验证（20 单测 + 真库 15/15）；**换源 DB-IP**（MaxMind 免费版仅个人使用）；`0013` 修回写失配；差**FC 富化函数部署**与**DB-IP 署名** |
 
 状态词只用四个：**未开始 / 进行中 / 待他拍板 / 已验收**。
 
@@ -385,3 +390,4 @@
 | 2026-11-10 | 收尾批次：0011 加 `not_found_redirects` RPC + 默认域名 scheme 改 https；跳转函数 404 分支按 shlink 语义回跳（域名级优先/占位符/双斜杠折叠），孤儿分类对齐；线上三类回跳闭环实测后临时配置已清；TDD 回归测试 11/11 |
 | 2026-11-10 | 交接：新增 `docs/handover.md`（项目定位/架构、线上状态、仓库地图、跑验证、平台坑、凭据红线、待办 #41–#44 与发布前置、工作约定）；地理富化设计定稿（`geo-enrichment.md`）转入待实现 |
 | 2026-11-10 | I7 起：仓库纳入 git（基线提交 3c95212）；`0012_geo_location.sql` 15 条语句上线（列改名已传播到三个分区、部分索引、三个 RPC、drain 覆盖、visit_json 覆盖、兜底 cron jobid 9）；跳转函数加 `remote_addr`（TDD，先红后绿，单测 15/15）；`dist/redirect.zip` 已重打包待上传；#43 富化函数等 MaxMind key |
+| 2026-11-11 | I7 主体完成：跳转包已上传（线上实测有真实流量带 remote_addr）；**发现并修 `apply_visit_locations` 回写失配** —— PostgREST 的 timestamptz 只有毫秒精度，`(id, occurred_at)` 双条件对亚毫秒行必然失配（实测 0 行、IP 不清）→ 新增 `0013` 改为只按 `id` 匹配（id 全局唯一）+ 单条 set-based UPDATE；**换源 MaxMind → DB-IP City Lite**（MaxMind 免费版「仅个人使用」不适配对外服务，DB-IP 免注册免 key 且 CC BY 4.0 允许商用，代价是无 time_zone 字段）；`fc/geo-enrich/` 实现完成（lib 纯逻辑 + index handler，20 例单测全绿），真实 mmdb 端到端跑通（拉批 15 / 回写 15 / 369ms，库内 location 落、IP 清零）；`dist/geo-enrich.zip` 已打包待部署 |

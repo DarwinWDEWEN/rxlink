@@ -1,0 +1,17 @@
+{
+  "name": "rxlink-geo-enrich",
+  "version": "1.0.0",
+  "private": true,
+  "description": "rxlink 地理富化函数（阿里云 FC 事件函数）：把 visit.remote_addr 查成地理信息并清空 IP",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "maxmind": "^5.0.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
