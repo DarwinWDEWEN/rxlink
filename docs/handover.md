@@ -102,6 +102,7 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 ## 5. 平台事实与坑（血泪，别重踩）
 
 - **ADB Supabase 无 `SECURITY DEFINER`**；新表默认「裸奔」——每张表必须 `enable/force RLS + revoke` 四行齐全，RPC 只授 `service_role`，`anon` 一律 revoke。
+- **FC 定时触发器的 cron 是 6 字段**（秒 分 时 日 月 周），不是 5 字段：每整点 = `0 0 * * * *`；每分钟 = `0 * * * * *`。漏写秒字段会解析失败。（2026-11-11 核实）
 - **`pg_cron` 只能 SQL 驱动**（无 pg_net/webhook）；cron 是 UTC 口径，用 `CRON_TZ=Asia/Shanghai` 前缀改时区；定时触发器是异步调用。
 - **FC 自定义域名会改写 Host 头**——用 `curl -H 'Host: 其他域名'` 打线上不生效，验证域名级配置只能配真实域名。
 - **默认公网域名 `*.fcapp.run` 发 302 会 `400 ExternalRedirectForbidden`**——必须走自定义域名，平台策略不是 bug。
@@ -145,7 +146,7 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 5. 环境变量：`SUPABASE_URL`（**VPC 内网地址**）、`SUPABASE_SERVICE_ROLE_KEY`；
 6. 网络：允许访问 VPC = **是**；**允许函数访问公网 = 否**（mmdb 随 Layer，运行时不联网）；
 7. 规格：超时 ≥60s、内存 ≥512MB；
-8. 触发器 > 定时触发器，**每小时**：`CRON_TZ=Asia/Shanghai 0 * * * *`。
+8. 触发器 > 定时触发器，**每小时**：`CRON_TZ=Asia/Shanghai 0 0 * * * *`。
 
 **为什么 mmdb 走 Layer 而不是打进代码包**：FC 的 ZIP 直传上限 50MB，而 DB-IP City Lite 压缩后 52.35MB，压不进去；OSS 上传（250MB）也行，但要跨到 OSS 控制台开桶传文件。Layer 与函数都在 FC 控制台内，mmdb 还能独立于代码更新。
 

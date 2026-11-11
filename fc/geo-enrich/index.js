@@ -62,8 +62,11 @@ function createHandler(deps = {}) {
   const timeBudgetMs = Number(env.GEO_TIME_BUDGET_MS || 45000);
   const backoffMs = Number(env.GEO_DOWNLOAD_BACKOFF_MS || 3600000);
 
-  const base = (env.SUPABASE_URL || '').replace(/\/+$/, '');
+  // SUPABASE_URL 优先（FC 侧应填 VPC 内网地址）；没填就退回 SUPABASE_API_URL（公网 host）
+  const rawBase = env.SUPABASE_URL || env.SUPABASE_API_URL || '';
+  const base = rawBase.replace(/\/+$/, '');
   const key = env.SUPABASE_SERVICE_ROLE_KEY || '';
+  const usedFallback = !env.SUPABASE_URL && !!env.SUPABASE_API_URL;
 
   // 全函数统一用注入的时间源，便于单测确定性
   const nowMs = () => now().getTime();
@@ -210,8 +213,18 @@ function createHandler(deps = {}) {
   return async function handler(event, context) {
     const startedAt = nowMs();
     if (!base || !key) {
-      log('[geo-enrich] not configured, skip');
-      return { statusCode: 200, body: JSON.stringify({ ok: false, reason: 'not_configured' }) };
+      // 直接点名缺哪个，省得对着「not_configured」猜
+      const missing = [];
+      if (!base) missing.push('SUPABASE_URL');
+      if (!key) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+      log(`[geo-enrich] not configured, missing: ${missing.join(', ')}`);
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ ok: false, reason: 'not_configured', missing }),
+      };
+    }
+    if (usedFallback) {
+      log('[geo-enrich] SUPABASE_URL 未设置，退回用 SUPABASE_API_URL（公网地址；生产建议填 VPC 内网地址）');
     }
 
     const reader = await ensureReader();

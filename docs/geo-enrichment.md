@@ -202,7 +202,7 @@ grant execute on function visits_pending_location(int), apply_visit_locations(js
 >
 > 一轮最多 `GEO_MAX_BATCHES` 批；某批返回行数 < limit 即认为拉干净，提前退出；累计超过 `GEO_TIME_BUDGET_MS` 也提前退出（不硬撑到平台超时）。
 
-**触发频率：每小时一次**（`CRON_TZ=Asia/Shanghai 0 * * * *`）。按当前流量（每分钟个位数新增）绰绰有余；代价是控制台位置信息延迟 0–60 分钟，换来的是调用量和 IP 留存时间都更低。批处理上限已相应放大到 20 批 × 500 行 = 10000 行/轮。
+**触发频率：每小时一次**（`CRON_TZ=Asia/Shanghai 0 0 * * * *`）。按当前流量（每分钟个位数新增）绰绰有余；代价是控制台位置信息延迟 0–60 分钟，换来的是调用量和 IP 留存时间都更低。批处理上限已相应放大到 20 批 × 500 行 = 10000 行/轮。
 
 **实测（2026-11-11，本机 + 真实库）**：
 
@@ -254,7 +254,7 @@ node scripts/build-geo-enrich-fc.mjs         # 重新打 dist/geo-enrich.zip
   - 环境变量：`SUPABASE_URL`（**VPC 内网地址**）、`SUPABASE_SERVICE_ROLE_KEY`；
   - 网络：允许访问 VPC = **是**；**允许函数访问公网 = 否**（包内自带 mmdb，运行时不联网）；
   - 规格：超时 ≥60s、内存 ≥512MB；
-  - 触发器 > 定时触发器，**每小时**：`CRON_TZ=Asia/Shanghai 0 * * * *`。
+  - 触发器 > 定时触发器，**每小时**：`CRON_TZ=Asia/Shanghai 0 0 * * * *`。
 - **代码包体积**：FC ZIP 直传上限 50MB、OSS 上传上限 250MB。
   - DB-IP City Lite 原始 121MB / gzip 58MB / brotli q11 ≈ 49–50MB —— **取决于 brotli 结果**；
   - 若 bundle 压不进 50MB：改用 **OSS 上传**（控制台代码页选「OSS 上传」，上限 250MB），或降级到 DB-IP Country Lite（4.2MB，只有国家级）。

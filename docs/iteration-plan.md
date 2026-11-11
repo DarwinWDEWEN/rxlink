@@ -241,7 +241,7 @@
    - 部分索引 `visit_pending_location_idx`（只装 `remote_addr` 非空的行）
    - 三个 RPC：`visits_pending_location` / `apply_visit_locations` / `retire_remote_addr`，只授 service_role
 2. **#42 跳转函数与 drain 带上 `remote_addr`**：`fc/redirect/index.js` 的 visit payload 加 `remote_addr`（取 `x-forwarded-for` 首元素，截断 64，无值写 null）；`drain_visit_inbox` 的 insert 多写一列（覆盖 0006 同名函数，其余逻辑一致）。
-3. **#43 富化函数 `fc/geo-enrich/`**：**事件函数**（`exports.handler`，FC 请求处理程序填 `index.handler`），定时触发器**每小时**（`0 * * * *` UTC，超时 ≥60s，内存 ≥512MB）；**mmdb 随 Layer 分发**（运行时不联网、不出公网；解压到 `/tmp` 约 1 秒），无 Layer 时才回退运行时下载；拉批 → 本地查 IP → 回写 → 清空 `remote_addr`；日志不得出现 IP。**代码已完成并端到端验证**（2026-11-11），差 FC 部署；数据源为 DB-IP City Lite（免 key，允许商用，见 `geo-enrichment.md` §0）。
+3. **#43 富化函数 `fc/geo-enrich/`**：**事件函数**（`exports.handler`，FC 请求处理程序填 `index.handler`），定时触发器**每小时**（`0 0 * * * *` UTC，超时 ≥60s，内存 ≥512MB）；**mmdb 随 Layer 分发**（运行时不联网、不出公网；解压到 `/tmp` 约 1 秒），无 Layer 时才回退运行时下载；拉批 → 本地查 IP → 回写 → 清空 `remote_addr`；日志不得出现 IP。**代码已完成并端到端验证**（2026-11-11），差 FC 部署；数据源为 DB-IP City Lite（免 key，允许商用，见 `geo-enrichment.md` §0）。
 4. **#44 契约 + 兜底**：`visit_json` 的 `visitLocation` 由恒 null 改为读列；`retire_remote_addr(7)` 由 pg_cron 每小时跑（jobid 9）做 7 天硬留存。
 
 **隐私口径**（与设计 §7 一致）：原始 IP 富化后立即清空；7 天硬上限由纯 SQL cron 兜底；IP 不进契约、不写日志、不进快照。

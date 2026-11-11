@@ -261,6 +261,27 @@ test('handler：配置缺失时安全退出，不抛异常', async () => {
   const handler = createHandler(deps);
   const res = await handler({}, {});
   assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.reason, 'not_configured');
+  assert.deepEqual(body.missing, ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'], '要点名缺哪个');
+});
+
+test('handler：只缺 service role key 时也能点名', async () => {
+  const { deps } = makeDeps();
+  delete deps.env.SUPABASE_SERVICE_ROLE_KEY;
+  const handler = createHandler(deps);
+  const body = JSON.parse((await handler({}, {})).body);
+  assert.deepEqual(body.missing, ['SUPABASE_SERVICE_ROLE_KEY']);
+});
+
+test('handler：只填了 SUPABASE_API_URL 也能跑（退回公网地址）', async () => {
+  const { deps, rpcCalls } = makeDeps();
+  delete deps.env.SUPABASE_URL;
+  deps.env.SUPABASE_API_URL = 'https://public.example.supabase.co';
+  const handler = createHandler(deps);
+  const res = await handler({}, {});
+  assert.equal(JSON.parse(res.body).ok, true, '不该报 not_configured');
+  assert.equal(rpcCalls.length, 2);
 });
 
 // ------------------------------------------------------- 包内自带 mmdb
