@@ -139,17 +139,23 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 **FC 部署步骤（他操作）**
 
 1. 函数计算 > 创建函数 > **事件函数**，运行时 Node.js 18/20，**请求处理程序填 `index.handler`**（FC 按「文件名.方法名」加载，不需要自己起 HTTP 服务）；
-2. 上传 `dist/geo-enrich.zip`（含 `node_modules`，55KB）；
-3. 环境变量：`SUPABASE_URL`（**VPC 内网地址**）、`SUPABASE_SERVICE_ROLE_KEY`；
-4. 网络：允许访问 VPC = **是**，允许函数访问公网 = **是**（下载 mmdb 用公网）；
-5. 规格：超时 ≥60s、内存 ≥512MB；
-6. 触发器 > 定时触发器，每分钟（`CRON_TZ=Asia/Shanghai 0 * * * * *`）。
+2. **建 Layer**：左侧「层」> 创建层 > 上传 `dist/geoip-layer.zip`（52MB，含 DB-IP mmdb）→ 名字随意（如 `geoip`）；
+3. 函数「编辑」> 层 > 添加刚建的层（挂载后 mmdb 在 `/opt/geoip/`）；
+4. 代码 > 上传 ZIP：`dist/geo-enrich.zip`（55KB，代码 + node_modules）；
+5. 环境变量：`SUPABASE_URL`（**VPC 内网地址**）、`SUPABASE_SERVICE_ROLE_KEY`；
+6. 网络：允许访问 VPC = **是**；**允许函数访问公网 = 否**（mmdb 随 Layer，运行时不联网）；
+7. 规格：超时 ≥60s、内存 ≥512MB；
+8. 触发器 > 定时触发器，**每小时**：`CRON_TZ=Asia/Shanghai 0 * * * *`。
+
+**为什么 mmdb 走 Layer 而不是打进代码包**：FC 的 ZIP 直传上限 50MB，而 DB-IP City Lite 压缩后 52.35MB，压不进去；OSS 上传（250MB）也行，但要跨到 OSS 控制台开桶传文件。Layer 与函数都在 FC 控制台内，mmdb 还能独立于代码更新。
 
 **部署后复核**：等一轮 → `select count(*) from visit where remote_addr is not null` 应降到 0；`select country_code, country_name, city_name from visit where country_code is not null order by id desc limit 5` 应有真实定位。
 
 **已知限制**：DB-IP 无 `time_zone` 字段 → `visit.timezone` 恒 NULL（契约允许 null，控制台不渲染）。要时区就把 `GEO_MMDB_URL` 指向带 time_zone 的库。
 
 **署名义务**：DB-IP 要求展示结果处标注 "IP Geolocation by DB-IP"（**待他决定加在哪里**）。
+
+**月更**（DB-IP 每月初发布新版）：`node scripts/build-geoip-bundle.mjs` → `node scripts/build-geo-enrich-fc.mjs` → 重新上传 Layer。
 
 ### 7.2 发布前置 / 云上清理（用户动作，#40）
 

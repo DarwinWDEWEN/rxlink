@@ -183,29 +183,42 @@ grant execute on function visits_pending_location(int), apply_visit_locations(js
 ## 5. 富化函数（`fc/geo-enrich/`）—— 已实现
 
 - 形态：事件函数，`exports.handler = async (event, context) => { ... }`；FC 控制台的**请求处理程序填 `index.handler`**（官方按「文件名.方法名」加载，运行时 bootstrap 调用，代码不需要自己起 HTTP 服务）。
-- 依赖：`maxmind`（mmdb 读取）。DB-IP 是单个 `.mmdb.gz`，用 Node 内置 `zlib` 解压即可，**不需要 tar**。部署时连同 `node_modules` 一起打 zip（`dist/geo-enrich.zip`，55KB）。
-- 环境变量：`SUPABASE_URL`（FC 侧是 VPC 内网地址）、`SUPABASE_SERVICE_ROLE_KEY`、`GEO_MMDB_PATH`（默认 `/tmp/dbip-city-lite.mmdb`）、`GEO_MMDB_URL`（覆盖下载地址，换源用）、`GEO_MMDB_BASE`（覆盖下载源根路径）、`GEO_BATCH_LIMIT`（默认 500）、`GEO_MAX_BATCHES`（默认 5）、`GEO_MMDB_MAX_AGE_DAYS`（默认 14）、`GEO_DOWNLOAD_BACKOFF_MS`（默认 3600000）。**不需要任何密钥。**
+- 依赖：`maxmind`（mmdb 读取），无其他依赖。DB-IP 是单个 `.mmdb.gz`，用 Node 内置 `zlib` 解压即可，**不需要 tar**。部署时连同 `node_modules` 一起打 zip。
+- **mmdb 来源：优先用代码包内自带的**（`fc/geo-enrich/geoip/dbip-city-lite.mmdb.br`），解压到 `/tmp` 后读；**包内没有才回退到运行时下载**（`GEO_MMDB_URL`）。
+  - 好处：运行时不联网 → **不需要「允许函数访问公网」**、不依赖 DB-IP 站点可用性、冷启动零下载（解压 0.7 秒）。
+  - 包内是原始 `.mmdb` 时直接从 `/code` 读，零解压、零 `/tmp` 占用。
+- 环境变量：`SUPABASE_URL`（FC 侧是 VPC 内网地址）、`SUPABASE_SERVICE_ROLE_KEY`、`GEO_MMDB_PATH`（默认 `/tmp/dbip-city-lite.mmdb`）、`GEO_MMDB_BUNDLE`（默认 `<代码包>/geoip/dbip-city-lite.mmdb.br`，置空串禁用）、`GEO_MMDB_URL`、`GEO_MMDB_BASE`、`GEO_MMDB_MAX_AGE_DAYS`（默认 14）、`GEO_BATCH_LIMIT`（默认 500）、`GEO_MAX_BATCHES`（默认 20）、`GEO_TIME_BUDGET_MS`（默认 45000）、`GEO_DOWNLOAD_BACKOFF_MS`（默认 3600000）。**不需要任何密钥。**
 - 代码结构：`lib.js`（纯逻辑，可单测）+ `index.js`（IO 与 handler，依赖注入便于测）。
 
 流程：
 
-1. `ensureReader()`：`GEO_MMDB_PATH` 不存在或 mtime 超过 14 天 → 下载
-   `https://download.db-ip.com/free/dbip-city-lite-YYYY-MM.mmdb.gz`
-   → gunzip → 写临时文件再 rename（避免半截文件）→ `maxmind.open` 校验；失败写 `<path>.last_fail`，**1 小时内不重试**（避免打数据源）。
+1. `ensureReader()`：`/tmp` 里有新鲜文件 → 直接用；否则 → 解压包内 bundle → 再否则才从 `GEO_MMDB_URL` 下载（失败写 `<path>.last_fail`，**1 小时内不重试**）。
 2. `visits_pending_location(GEO_BATCH_LIMIT)` 拉批。
 3. 逐条 `reader.get(ip)`：**先 `maxmind.validate(ip)` 再查**（`reader.get` 不校验，`'1.2.3'` 也会给出国家），异常与查不到一律当空。
 4. `apply_visit_locations(rows)` 回写。
-5. 日志：只有计数（batches/pulled/updated/耗时/mmdb 字节数）；**不打印 IP**。下载 URL 在错误日志里会被抹掉（换带凭据的源时不会泄露）。
+5. 日志：只有计数（batches/pulled/updated/耗时）；**不打印 IP**。下载 URL 在错误日志里会被抹掉。
 
 > 未命中（私有 IP / 库中查不到）也要回写清空，否则会每轮重复捞；靠 7 天兜底防长期堆积。
 >
-> 一轮最多处理 `GEO_MAX_BATCHES` 批；某批返回行数 < limit 即认为拉干净，提前退出。
+> 一轮最多 `GEO_MAX_BATCHES` 批；某批返回行数 < limit 即认为拉干净，提前退出；累计超过 `GEO_TIME_BUDGET_MS` 也提前退出（不硬撑到平台超时）。
+
+**触发频率：每小时一次**（`CRON_TZ=Asia/Shanghai 0 * * * *`）。按当前流量（每分钟个位数新增）绰绰有余；代价是控制台位置信息延迟 0–60 分钟，换来的是调用量和 IP 留存时间都更低。批处理上限已相应放大到 20 批 × 500 行 = 10000 行/轮。
 
 **实测（2026-11-11，本机 + 真实库）**：
 
-- 20 例单测全绿（`node --test fc/geo-enrich/test/`）
-- 真实 mmdb 下载 → 解压（127MB）→ `maxmind.open` → 记录结构与 `locationOf` 预期一致
+- 24 例单测全绿（`node --test fc/geo-enrich/test/`）
+- 真实 mmdb 下载 → 解压（121MB）→ `maxmind.open` → 记录结构与 `locationOf` 预期一致
 - 端到端：拉批 15 行 / 回写 15 行 / 369ms；落库结果 `US·Virginia·Ashburn`、`HK·Central and Western·Sheung Wan`、`MA·Rabat`、`PL·Warsaw`；`remote_addr` 回写后全为 NULL
+
+**月更流程**（DB-IP 每月初发布新版）：
+
+```bash
+node scripts/build-geoip-bundle.mjs          # 下载 + brotli 压缩 → fc/geo-enrich/geoip/
+node scripts/build-geo-enrich-fc.mjs         # 重新打 dist/geo-enrich.zip
+```
+
+> bundle 是构建产物（不进 git，`.gitignore` 已排除），靠上面两条命令可复现。
+
 
 ## 6. 契约（`visit_json`）
 
@@ -235,12 +248,17 @@ grant execute on function visits_pending_location(int), apply_visit_locations(js
 ## 8. 前置
 
 - ~~MaxMind 账号 + License key~~ —— **已不需要**（换源为 DB-IP，见 §0）。
-- **FC 富化函数部署**（用户动作）：事件函数 + 定时触发器 + 双网络（公网 + VPC）+ 超时 ≥60s + 内存 ≥512MB。
-  - 请求处理程序填 `index.handler`；运行时选 Node.js 18/20；代码包 `dist/geo-enrich.zip`；
+- **FC 富化函数部署**（用户动作）：
+  - 函数计算 > 创建函数 > **事件函数**，运行时 Node.js 18/20，**请求处理程序填 `index.handler`**；
+  - 上传 `dist/geo-enrich.zip`；
   - 环境变量：`SUPABASE_URL`（**VPC 内网地址**）、`SUPABASE_SERVICE_ROLE_KEY`；
-  - 网络：允许访问 VPC = 是，允许函数访问公网 = 是（下载 mmdb 用公网）；
-  - 定时触发器：每分钟（`CRON_TZ=Asia/Shanghai 0 * * * * *`）；事件函数支持除 HTTP 外的所有触发器。
-- 付费版（已有阻塞项；方案 A 本身免费版可跑通）。
+  - 网络：允许访问 VPC = **是**；**允许函数访问公网 = 否**（包内自带 mmdb，运行时不联网）；
+  - 规格：超时 ≥60s、内存 ≥512MB；
+  - 触发器 > 定时触发器，**每小时**：`CRON_TZ=Asia/Shanghai 0 * * * *`。
+- **代码包体积**：FC ZIP 直传上限 50MB、OSS 上传上限 250MB。
+  - DB-IP City Lite 原始 121MB / gzip 58MB / brotli q11 ≈ 49–50MB —— **取决于 brotli 结果**；
+  - 若 bundle 压不进 50MB：改用 **OSS 上传**（控制台代码页选「OSS 上传」，上限 250MB），或降级到 DB-IP Country Lite（4.2MB，只有国家级）。
+- 付费版（已有阻塞项）。
 - 署名：DB-IP 要求展示结果处标注 "IP Geolocation by DB-IP"（**待用户决定加在哪里**）。
 
 ## 9. 测试

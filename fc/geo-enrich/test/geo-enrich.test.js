@@ -262,3 +262,83 @@ test('handler：配置缺失时安全退出，不抛异常', async () => {
   const res = await handler({}, {});
   assert.equal(res.statusCode, 200);
 });
+
+// ------------------------------------------------------- 包内自带 mmdb
+
+test('handler：代码包内自带 mmdb 时不联网下载', async () => {
+  const { deps, fsx, downloads, rpcCalls } = makeDeps();
+  deps.env.GEO_MMDB_BUNDLE = '/code/geoip/dbip-city-lite.mmdb';
+  fsx.files.set('/code/geoip/dbip-city-lite.mmdb', {
+    data: Buffer.from('raw-mmdb-bytes'),
+    mtimeMs: Date.parse('2026-11-01T00:00:00Z'),
+    size: 14,
+  });
+  const handler = createHandler(deps);
+  await handler({}, {});
+  assert.equal(downloads.length, 0, '包内有就不该下载');
+  assert.equal(rpcCalls.length, 2, '照常拉批 + 回写');
+});
+
+test('handler：包内是 .br 时先解压落地再读', async () => {
+  const { deps, fsx, downloads } = makeDeps();
+  deps.env.GEO_MMDB_BUNDLE = '/code/geoip/dbip-city-lite.mmdb.br';
+  const br = zlib.brotliCompressSync(Buffer.from('expanded-mmdb-bytes'));
+  fsx.files.set('/code/geoip/dbip-city-lite.mmdb.br', {
+    data: br,
+    mtimeMs: Date.parse('2026-11-01T00:00:00Z'),
+    size: br.length,
+  });
+  const handler = createHandler(deps);
+  await handler({}, {});
+  assert.equal(downloads.length, 0);
+  const landed = fsx.files.get('/tmp/dbip-city-lite.mmdb');
+  assert.ok(landed, '解压结果应落到 /tmp');
+  assert.equal(landed.data.toString(), 'expanded-mmdb-bytes');
+});
+
+test('handler：包内 mmdb 坏了 → 回落到运行时下载', async () => {
+  const { deps, fsx, downloads } = makeDeps();
+  deps.env.GEO_MMDB_BUNDLE = '/code/geoip/dbip-city-lite.mmdb';
+  fsx.files.set('/code/geoip/dbip-city-lite.mmdb', {
+    data: Buffer.from('bad'), mtimeMs: Date.parse('2026-11-01T00:00:00Z'), size: 3,
+  });
+  // 只有 /tmp 那份（下载后落地的）能打开，包内这份视为损坏
+  const handler = createHandler({
+    ...deps,
+    openReader: async (p) => {
+      if (p === '/code/geoip/dbip-city-lite.mmdb') throw new Error('corrupt');
+      return { get: () => undefined };
+    },
+  });
+  await handler({}, {});
+  assert.equal(downloads.length, 1, '包内坏了应该下载兜底');
+});
+
+// ------------------------------------------------------- 时间预算
+
+test('handler：超过时间预算提前退出，不硬撑到超时', async () => {
+  let clock = Date.parse('2026-11-19T00:00:00Z');
+  const { deps } = makeDeps({ now: () => new Date(clock) });
+  deps.env.GEO_TIME_BUDGET_MS = '1000';
+  deps.env.GEO_BATCH_LIMIT = '2';
+  let pulls = 0;
+  deps.rpc = async (name) => {
+    if (name === 'visits_pending_location') {
+      pulls++;
+      clock += 600; // 每批耗时 600ms
+      // 返回满批 → 不会因为「没满」提前退出
+      return [
+        { id: pulls * 2 - 1, occurred_at: 'x', remote_addr: '203.0.113.45' },
+        { id: pulls * 2, occurred_at: 'x', remote_addr: '203.0.113.46' },
+      ];
+    }
+    return 2;
+  };
+  const handler = createHandler(deps);
+  const res = await handler({}, {});
+  // 预算 1000ms：第 1 批耗时 600ms，第 2 批后累计 1200ms > 1000 → 第 3 轮前退出
+  assert.equal(pulls, 2, `预算内应只拉 2 批，实际 ${pulls}`);
+  assert.equal(res.statusCode, 200);
+});
+
+

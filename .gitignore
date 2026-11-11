@@ -5,6 +5,8 @@ supabase/functions/.env
 node_modules/
 web/dist/
 dist/
+# 地理富化的 mmdb bundle：构建产物（~50MB），用 scripts/build-geoip-bundle.mjs 重建
+fc/geo-enrich/geoip/
 *.local
 .DS_Store
 codegraph.db

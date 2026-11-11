@@ -15,7 +15,7 @@
 | 落库 | cron `rxlink-drain`（job 6，每分钟） | `drain_visit_inbox(500)` | `0005` / `0012` |
 | 死链清理 | cron `rxlink-prune`（job 8，每天 19:00） | `prune_dead_links(180, false)`（真实执行） | `0005` |
 | IP 兜底清理 | cron `rxlink-retire-ip`（job 9，每小时） | `retire_remote_addr(7)`（7 天硬留存上限） | `0012` |
-| 地理富化 | FC 事件函数 `geo-enrich`（待部署） | 请求处理程序 `index.handler`；定时触发器每分钟 | `fc/geo-enrich/`（数据源 DB-IP City Lite） |
+| 地理富化 | FC 事件函数 `geo-enrich`（待部署） | 请求处理程序 `index.handler`；定时触发器**每小时**；mmdb 在 Layer `/opt/geoip/` | `fc/geo-enrich/`（数据源 DB-IP City Lite） |
 
 关键表：`short_url`、`domain`（id 0 = 默认域名 `example.com`）、`visit_inbox`（UNLOGGED 热路径入队）、`visit`（按月分区明细）、`short_url_visits_counts`、`link_version`（单行 seq，缓存失效依据）、`api_key`（只存 sha256）。
 
