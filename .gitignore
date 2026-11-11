@@ -11,3 +11,5 @@ fc/geo-enrich/geoip/
 .DS_Store
 codegraph.db
 .codegraph/
+# 另一任务的 UI 产物（21MB PNG），不入本仓库版本控制；文件保留在工作区
+design/

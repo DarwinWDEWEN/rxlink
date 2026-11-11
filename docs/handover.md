@@ -28,7 +28,7 @@ shlink 兼容的短链平台，跑在阿里云 ADB PostgreSQL Supabase 上，自
 | 404 回退（域名级/全局/占位符/双斜杠折叠，`not_found_redirects` RPC） | 已上线（0011） |
 | 死链清理 `prune_dead_links(180,false)` | 已转真实执行（cron job 8） |
 | 探针退场、压测 50 并发 p95 416ms、runbook | 已完成 |
-| **地理富化** | **代码全部完成并端到端验证（数据面 0012/0013 已上线、跳转已带 IP、富化函数 20 单测 + 真库 15/15）；差 FC 部署（`dist/geo-enrich.zip`）+ DB-IP 署名** |
+| **地理富化** | **已全部上线并验证**（数据面 0012/0013/0014 已上线、跳转带 IP、FC 富化函数已部署跑通 275/275、端到端探针闭环、DB-IP 署名已实现待重传 `console.zip`） |
 | Supabase 付费版 | **未升级**（免费版禁生产，发布前置，用户云上动作） |
 
 ## 3. 仓库地图
@@ -40,13 +40,15 @@ rxlink/                    # 已纳入 git（基线提交 3c95212，2026-11-10�
 │  │  ├─ index.js        # 入口：resolve/缓存命中/404 回退/入队（入队带 remote_addr）
 │  │  ├─ cache.js        # 实例内存快照 + link_version seq 轮询失效
 │  │  └─ test/redirect.test.js   # 15 例，真实子进程 + mock 网关
-│  ├─ geo-enrich/        # 富化函数（事件函数）—— 代码完成，待 FC 部署
-│  │  ├─ index.js        # handler：下载 mmdb → 拉批 → 回写 → 清 IP
+│  ├─ geo-enrich/        # 富化函数（事件函数）—— 已部署上线，每小时跑一次
+│  │  ├─ index.js        # handler：解包 mmdb → 拉批 → 回写 → 清 IP
 │  │  ├─ lib.js          # 纯逻辑（URL 拼装/记录映射/时效判断）
-│  │  └─ test/geo-enrich.test.js  # 20 例
+│  │  └─ test/geo-enrich.test.js  # 26 例
 │  └─ console/           # 控制台 FC 函数（build 产物内联单文件）
+│     ├─ index.js        # 静态托管 + 返回 HTML 时注入 DB-IP 署名页脚
+│     └─ test/console.test.js     # 7 例（署名注入）
 ├─ supabase/
-│  ├─ migrations/        # 0001–0013（已应用历史，不改不删；新变更写新编号）
+│  ├─ migrations/        # 0001–0014（已应用历史，不改不删；新变更写新编号）
 │  ├─ functions/
 │  │  ├─ compat/index.ts # 兼容层（/rest/v3，23 方法）
 │  │  ├─ console/        # Edge Function 形态的控制台（已被 FC 函数取代，闲置）
@@ -128,16 +130,16 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 
 ## 7. 待办（下一个 AI 的起点）
 
-### 7.1 地理富化（代码全部完成，差 FC 部署）
+### 7.1 地理富化（已全部上线并验证）
 
 按 `docs/geo-enrichment.md` 实现，四步 —— **四步都已落地**：
 
 1. ✅ **#41 迁移 `0012_geo_location.sql`**（2026-11-10 应用，15 条语句）+ **`0013_geo_location_id_match.sql`**（2026-11-11，2 条，修回写失配）：`visit_inbox.remote_addr`；`visit` 加 `remote_addr` + `country/region/city` 正名为 `country_name/region_name/city_name` + 加 `country_code/lat/lon/timezone`；部分索引 `visit_pending_location_idx`；三个 RPC `visits_pending_location` / `apply_visit_locations` / `retire_remote_addr`（只授 service_role）。
-2. ✅ **#42 跳转函数与 drain 带上 `remote_addr`**：库侧与函数侧都已上线（**跳转包 2026-11-11 已上传**，线上已有带 IP 的真实流量行）；单测 15/15。
-3. ✅ **#43 富化函数 `fc/geo-enrich/`**：代码完成，20 例单测全绿，真实 mmdb 端到端跑通（拉批 15 / 回写 15 / 369ms）。**数据源是 DB-IP City Lite**（免注册免 key，CC BY 4.0 允许商用）—— 原设计的 MaxMind 免费版只允许个人使用，与「对外提供服务」冲突，故换源（详见 `geo-enrichment.md` §0）。**差 FC 部署**。
+2. ✅ **#42 跳转函数与 drain 带上 `remote_addr`**：库侧与函数侧都已上线（**跳转包 2026-11-11 已上传**，线上已有带 IP 的真实流量行）；单测 15/15。**`0014_drain_clear_remote_addr.sql`（2026-11-11，1 条）** 覆盖 `drain_visit_inbox`：落库后立即清空入队侧的原始 IP（留存从最长 1 天压到分钟级）。
+3. ✅ **#43 富化函数 `fc/geo-enrich/`**：26 例单测全绿，真实 mmdb 端到端跑通；**已由用户在 FC 上部署**（Layer + 代码包 + 环境变量 + 每小时定时触发器），手动执行返回 `{"ok":true,"batches":1,"pulled":275,"updated":275}`。**数据源是 DB-IP City Lite**（免注册免 key，CC BY 4.0 允许商用）—— 原设计的 MaxMind 免费版只允许个人使用，与「对外提供服务」冲突，故换源（详见 `geo-enrichment.md` §0）。
 4. ✅ **#44 契约 + 兜底**：`visit_json` 的 `visitLocation` 由恒 null 改为读列；`retire_remote_addr(7)` 由 pg_cron 每小时跑（jobid 9，`rxlink-retire-ip`）做 7 天硬留存。
 
-**FC 部署步骤（他操作）**
+**FC 部署步骤（他操作）—— 富化函数已按此完成**
 
 1. 函数计算 > 创建函数 > **事件函数**，运行时 Node.js 18/20，**请求处理程序填 `index.handler`**（FC 按「文件名.方法名」加载，不需要自己起 HTTP 服务）；
 2. **建 Layer**：左侧「层」> 创建层 > 上传 `dist/geoip-layer.zip`（52MB，含 DB-IP mmdb）→ 名字随意（如 `geoip`）；
@@ -146,15 +148,15 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 5. 环境变量：`SUPABASE_URL`（**VPC 内网地址**）、`SUPABASE_SERVICE_ROLE_KEY`；
 6. 网络：允许访问 VPC = **是**；**允许函数访问公网 = 否**（mmdb 随 Layer，运行时不联网）；
 7. 规格：超时 ≥60s、内存 ≥512MB；
-8. 触发器 > 定时触发器，**每小时**：`CRON_TZ=Asia/Shanghai 0 0 * * * *`。
+8. 触发器 > 定时触发器，**每小时**：`CRON_TZ=Asia/Shanghai 0 0 * * * *`（⚠️ **FC 的 cron 是 6 字段**「秒 分 时 日 月 周」，漏秒字段会解析失败）。
 
 **为什么 mmdb 走 Layer 而不是打进代码包**：FC 的 ZIP 直传上限 50MB，而 DB-IP City Lite 压缩后 52.35MB，压不进去；OSS 上传（250MB）也行，但要跨到 OSS 控制台开桶传文件。Layer 与函数都在 FC 控制台内，mmdb 还能独立于代码更新。
 
-**部署后复核**：等一轮 → `select count(*) from visit where remote_addr is not null` 应降到 0；`select country_code, country_name, city_name from visit where country_code is not null order by id desc limit 5` 应有真实定位。
+**部署后复核 —— 已做，结果如下**（2026-11-11）：`visit` 451 行 / 已富化 291 / `ip_pending=0`；`visit_inbox` 持 IP 行数 0（0014 上线后由每分钟 drain 清空）；真实流量探针闭环：跳转带 IP → 入队 → drain（写 visit、清 inbox）→ 富化写 `US / California / Mountain View / 37.422,-122.085` 并清空 `visit.remote_addr`。
 
 **已知限制**：DB-IP 无 `time_zone` 字段 → `visit.timezone` 恒 NULL（契约允许 null，控制台不渲染）。要时区就把 `GEO_MMDB_URL` 指向带 time_zone 的库。
 
-**署名义务**：DB-IP 要求展示结果处标注 "IP Geolocation by DB-IP"（**待他决定加在哪里**）。
+**署名义务**：DB-IP 要求展示结果处标注 "IP Geolocation by DB-IP"（并链接 db-ip.com）—— **已实现**：`fc/console/index.js` 在返回 HTML 时注入固定页脚 + `<style>`，不重编 Angular（7 例单测全绿）。**待他重传 `dist/console.zip` 后线上生效**（`node scripts/build-console-fc.mjs` 已重新打包）。
 
 **月更**（DB-IP 每月初发布新版）：`node scripts/build-geoip-bundle.mjs` → `node scripts/build-geo-enrich-fc.mjs` → 重新上传 Layer。
 
@@ -163,6 +165,9 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 - Supabase 升付费版（免费版禁生产）。
 - 云上待清理：`cdn.example.com` 域名/解析下线、FC 账号探针残留、闲置 `console` Edge 函数。
 - Domains 红标处置已定：先接受（方案 a）。
+- **重传 `dist/console.zip`**（DB-IP 署名页脚上线）。
+- **确认 FC 定时触发器 cron 已改成 6 字段** `CRON_TZ=Asia/Shanghai 0 0 * * * *`（本机无法验证）。
+- **备份表 `visit_bak_0012`**（158 行、授权已收口）保留到 #40 发布完成后再 drop。
 
 ### 7.3 明确不做（YAGNI）
 

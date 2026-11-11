@@ -12,10 +12,10 @@
 | 数据面 | ADB PostgreSQL Supabase | API host `https://your-project-ref.supabase.co`；FC 走 **VPC 内网地址** | `supabase/migrations/` |
 | 兼容层 | Supabase Edge Function `compat` | `…/functions/v1/compat/rest/v3/*`（shlink 契约） | `supabase/functions/compat/index.ts` |
 | 控制台 | FC Web 函数 `console-prod` | `https://console.example.com`（已配证书 + 强制 HTTPS） | `shlink-web-client/` build → `fc/console/index.js` |
-| 落库 | cron `rxlink-drain`（job 6，每分钟） | `drain_visit_inbox(500)` | `0005` / `0012` |
+| 落库 | cron `rxlink-drain`（job 6，每分钟） | `drain_visit_inbox(500)`（`0014` 起落库后即清空入队侧原始 IP） | `0005` / `0012` / `0014` |
 | 死链清理 | cron `rxlink-prune`（job 8，每天 19:00） | `prune_dead_links(180, false)`（真实执行） | `0005` |
 | IP 兜底清理 | cron `rxlink-retire-ip`（job 9，每小时） | `retire_remote_addr(7)`（7 天硬留存上限） | `0012` |
-| 地理富化 | FC 事件函数 `geo-enrich`（待部署） | 请求处理程序 `index.handler`；定时触发器**每小时**；mmdb 在 Layer `/opt/geoip/` | `fc/geo-enrich/`（数据源 DB-IP City Lite） |
+| 地理富化 | FC 事件函数 `geo-enrich`（**已部署**） | 请求处理程序 `index.handler`；定时触发器**每小时**（cron 6 字段：`0 0 * * * *`）；mmdb 在 Layer `/opt/geoip/` | `fc/geo-enrich/`（数据源 DB-IP City Lite） |
 
 关键表：`short_url`、`domain`（id 0 = 默认域名 `example.com`）、`visit_inbox`（UNLOGGED 热路径入队）、`visit`（按月分区明细）、`short_url_visits_counts`、`link_version`（单行 seq，缓存失效依据）、`api_key`（只存 sha256）。
 
@@ -55,11 +55,13 @@ select
   (select count(*) from visit where country_code is not null)::text as enriched_total,
   (select count(*) from visit
      where remote_addr is not null
-       and occurred_at < now() - interval '7 days')::text as ip_over_7d;
+       and occurred_at < now() - interval '7 days')::text as ip_over_7d,
+  (select count(*) from visit_inbox where remote_addr is not null)::text as inbox_holding_ip;
 ```
 
 - `ip_pending > 0` 且持续增长 → 富化函数（#43）没跑或跑挂了；超过 7 天的部分会被 job 9 兜底清掉（数据丢失但不越权留存）。
 - `ip_over_7d > 0` → job 9（`rxlink-retire-ip`）没跑，查 `cron.job_run_details` 里 jobid=9。
+- `inbox_holding_ip > 0` → `drain_visit_inbox` 没跑到（job 6 每分钟一次）或函数被旧版本覆盖；正常值恒为 0（`0014` 起落库即清）。
 - 跳转函数新包上传前 `ip_pending` 恒为 0（线上跑的是老版本，不带 `remote_addr`）。
 
 ### 3.2 cron 运行历史
@@ -138,8 +140,9 @@ bash scripts/new-api-key.sh <name>   # name: 字母/数字/_/-，1-40 字
   node scripts/build-console-fc.mjs        # 产出 dist/console.zip
   ```
   上传 `dist/console.zip` 到 FC 函数 `console-prod`（启动命令 `npm run start`，包内 `package.json` 指向 `node index.js`）。
+- 署名：`fc/console/index.js` 在返回 HTML 时注入 DB-IP 署名页脚（`IP Geolocation by DB-IP` + db-ip.com 链接），**改 `index.js` 后必须重新打 zip 再上传**（`node scripts/build-console-fc.mjs`；不需要重编 Angular，`node --test fc/console/test/console.test.js` 可自检 7 例）。
 - 回滚：回退 `shlink-web-client/` 源码 → 重新 build → 重新打 zip → 重新上传。
-- 验证：`https://console.example.com/` 200；深链刷新不 404；SW active。
+- 验证：`https://console.example.com/` 200；深链刷新不 404；SW active；页面底部出现 DB-IP 署名。
 
 ### 5.3 兼容层（compat Edge Function）
 

@@ -26,6 +26,30 @@ const MIME = {
 
 const cache = new Map();
 
+// DB-IP 许可要求：在展示地理定位结果处标注来源并链接到 db-ip.com。
+// 控制台是预构建的 Angular SPA（重编成本高），所以在函数返回 HTML 时动态注入一行页脚。
+const ATTRIBUTION_CSS =
+  '.rxlink-attribution{position:fixed;left:0;right:0;bottom:0;padding:6px 12px;' +
+  'font:12px/1.5 system-ui,-apple-system,"PingFang SC",sans-serif;color:#8a8f98;' +
+  'background:rgba(255,255,255,.92);text-align:center;border-top:1px solid rgba(0,0,0,.08);z-index:9999}' +
+  '.rxlink-attribution a{color:#2b6cb0;text-decoration:none}' +
+  '.rxlink-attribution a:hover{text-decoration:underline}';
+const ATTRIBUTION_HTML =
+  '<div class="rxlink-attribution">IP Geolocation by ' +
+  '<a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a></div>';
+
+function injectAttribution(html) {
+  // 已注入过就直接返回，避免重复叠加
+  if (html.includes('rxlink-attribution')) return html;
+  const style = `<style>${ATTRIBUTION_CSS}</style>`;
+  let out = html;
+  if (out.includes('</head>')) out = out.replace('</head>', `${style}</head>`);
+  else out = style + out;
+  if (out.includes('</body>')) out = out.replace('</body>', `${ATTRIBUTION_HTML}</body>`);
+  else out += ATTRIBUTION_HTML;
+  return out;
+}
+
 function asset(rel) {
   if (cache.has(rel)) return cache.get(rel);
   let entry = null;
@@ -85,13 +109,15 @@ const server = http.createServer((req, res) => {
   if (!entry) return reply(res, 500, 'console build missing');
 
   const immutable = rel.startsWith('assets/');
+  let body = entry.body;
+  if (entry.type.startsWith('text/html')) body = Buffer.from(injectAttribution(entry.body.toString('utf8')));
   res.writeHead(200, {
     'Content-Type': entry.type,
     'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Length': entry.body.length,
+    'Content-Length': body.length,
   });
-  res.end(req.method === 'HEAD' ? undefined : entry.body);
+  res.end(req.method === 'HEAD' ? undefined : body);
 });
 
 server.listen(PORT, '0.0.0.0', () => {

@@ -123,6 +123,8 @@ create index visit_pending_location_idx on visit (occurred_at) where remote_addr
 >
 > **修订（2026-11-11，`0013_geo_location_id_match.sql`）**：0012 的 `apply_visit_locations` 用 `(id, occurred_at)` 双条件定位行，但 **PostgREST 把 timestamptz 序列化成毫秒精度**，微秒尾巴被截断；而 `visit.occurred_at` 是微秒精度。⇒ 凡是 `occurred_at` 不是毫秒对齐的行（SQL 侧造的数据、手工数据）永远匹配不上：实测 `apply_visit_locations` 返回 0 行、`remote_addr` 不被清空。
 > 生产流量走 JS `toISOString()`（毫秒精度）恰好对齐才侥幸没暴露。**修复：只按 `id` 匹配** —— `visit.id` 是父表上的 bigserial，序列跨分区共享 ⇒ 全局唯一（实测 173 行 / 173 个不同 id）；分区扫描仍走各分区 PK 索引的前导列 id，代价可接受。同时把逐行循环 UPDATE 改成单条 set-based UPDATE（一批 500 行从 500 次扫描降到 1 次）。
+>
+> **修订（2026-11-11，`0014_drain_clear_remote_addr.sql`）**：覆盖 `drain_visit_inbox`，在 WITH 块之后多一条 `update visit_inbox set remote_addr = null where processed_at is not null and remote_addr is not null`。原实现的原始 IP 要等入队行被物理删除（`processed_at` 满 1 天）才消失，是链路上最长的一处 IP 留存。改成 **drain 落库后立即清空** ⇒ 入队侧 IP 留存从「最长 1 天」压到「分钟级」。清空放在 WITH 之后是必须的：`scored` CTE 已把 `remote_addr` 读进 `ins`（写入 `visit`），先清 inbox 再 insert 会让富化拿不到 IP。
 
 ### 4.1 RPC
 
@@ -241,9 +243,18 @@ node scripts/build-geo-enrich-fc.mjs         # 重新打 dist/geo-enrich.zip
 
 ## 7. 兜底与隐私
 
-- `remote_addr` 最长留 7 天：`retire_remote_addr()` 由 pg_cron 每小时清一次（纯 SQL）。
-- 富化函数下载失败 → 不清空、下轮再试；超期由兜底清掉。
-- 原始 IP 不写日志、不进契约、不进快照；inbox 是 UNLOGGED 且 1 天内物理删。
+原始 IP 的完整留存链路（2026-11-11 真实流量实测，见 §9）：
+
+| 环节 | 位置 | 留存时长 | 由谁清空 |
+| --- | --- | --- | --- |
+| 入队 | `visit_inbox.remote_addr` | 分钟级 | `drain_visit_inbox` 落库后立即置 null（`0014`） |
+| 落库 | `visit.remote_addr` | 分钟级 | `apply_visit_locations` 回写地理结果时同一条 UPDATE 置 null |
+| 兜底 | `visit.remote_addr` | 最长 7 天 | `retire_remote_addr()`，pg_cron 每小时（jobid 9） |
+
+- 富化函数下载失败 → 不回写、不清空，下轮再试；超期由兜底清掉。
+- 原始 IP 不写日志、不进契约、不进快照；`visit_inbox` 是 UNLOGGED 且 1 天内物理删。
+- 权限实测（2026-11-11）：`visit` / `visit_inbox` / `visit_bak_0012` 均为 `force RLS` + 0 policy，`anon` / `authenticated` 在表级与列级**均无任何授权** —— 原始 IP 对外不可读。
+- 地理字段（country/region/city/经纬度）是去标识化结果，长期留存无隐私问题。
 
 ## 8. 前置
 
@@ -259,7 +270,7 @@ node scripts/build-geo-enrich-fc.mjs         # 重新打 dist/geo-enrich.zip
   - DB-IP City Lite 原始 121MB / gzip 58MB / brotli q11 ≈ 49–50MB —— **取决于 brotli 结果**；
   - 若 bundle 压不进 50MB：改用 **OSS 上传**（控制台代码页选「OSS 上传」，上限 250MB），或降级到 DB-IP Country Lite（4.2MB，只有国家级）。
 - 付费版（已有阻塞项）。
-- 署名：DB-IP 要求展示结果处标注 "IP Geolocation by DB-IP"（**待用户决定加在哪里**）。
+- 署名：DB-IP 要求展示结果处标注 "IP Geolocation by DB-IP"（并链接 db-ip.com）—— **已实现**（2026-11-11）：`fc/console/index.js` 在返回 HTML 时动态注入一行固定页脚（含 db-ip.com 链接）+ 一段 `<style>`，不重编 Angular 前端。控制台是预构建 SPA，注入点放在静态托管函数里，改一个文件即可。**待用户重传 `dist/console.zip` 后生效。**
 
 ## 9. 测试
 
@@ -268,7 +279,10 @@ node scripts/build-geo-enrich-fc.mjs         # 重新打 dist/geo-enrich.zip
 - **富化函数**（已跑通）：20 例单测（mock reader + mock RPC，覆盖命中 / 未命中 / 非法 IP / mmdb 缺失 / 下载失败退避 / 日志无 IP）；集成用真实 mmdb 跑一遍。
 - **契约**（已跑通）：`visit_json` 有位置 / 无位置两态；`remote_addr` 不出现在契约里。
 - **端到端**（2026-11-11 已跑通，本机 + 真实库）：15 行拉取 → 15 行回写 → 369ms；库内 location 落、`remote_addr` 清零。
-- **线上闭环**（待部署后）：FC 富化函数挂上定时触发器 → 等一轮 → 查库确认 location 落、`remote_addr` 清。
+- **线上闭环**（2026-11-11 已跑通）：用户部署后手动执行富化函数 → `{"ok":true,"batches":1,"pulled":275,"updated":275}`；库内 291 行有地理结果、`ip_pending=0`。
+- **`0014` 行为验证**（2026-11-11，DO 块内断言，失败即回滚）：塞一条带 IP 的入队行 → `drain_visit_inbox` → 断言 `visit_inbox.remote_addr` 已空 **且** `visit.remote_addr` 仍是原 IP（富化输入没丢）→ 实测 `inbox_ip=<null> visit_ip=203.0.113.7`。测试数据已清理（visit 回到 451 行、孤儿计数回到 429）。
+- **真实流量全链路探针**（2026-11-11）：`curl -H "x-forwarded-for: 8.8.8.8"` 打真实短链 → 入队行带 IP → 一轮 cron drain 后 inbox IP 清空、`visit` 拿到 IP → 富化回写 `US / United States / California / Mountain View / 37.422,-122.085`，同时 `visit.remote_addr` 清空。`timezone` 为 NULL（DB-IP 无该字段）。
+- **console 署名注入**（2026-11-11，`node --test fc/console/test/console.test.js`）：7 例全绿 —— 注入文本与 db-ip.com 链接、页脚落在 `</body>` 前、样式进 `<head>`、`Content-Length` 与实际字节一致、SPA 回退同样带署名、静态资源不被注入、已注入不重复、404 不被 SPA 回退吞掉。
 
 ## 10. 不做
 
