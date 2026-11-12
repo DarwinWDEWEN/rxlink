@@ -11,7 +11,7 @@
 
 | # | shlink 动作 | 方法 + 路径 | rxlink | 说明 |
 |---|---|---|---|---|
-| 1 | `health` | GET `/health` | ✅ | 不校验 key，返回 `{status:'pass',version:'4.0.0'}` |
+| 1 | `health` | GET `/health` | ✅ | 不校验 key，返回 `{status:'pass',version:'5.1.0'}` |
 | 2 | `listShortUrls` | GET `/short-urls` | ✅ | 搜索/标签（all·any）/域名/时间区间/排除max·过期/排序/分页全支持 |
 | 3 | `createShortUrl` | POST `/short-urls` | ✅ | 自定义 slug、短码长度、findIfExists、标签、标题、crawlable、forwardQuery、有效期、maxVisits |
 | 4 | `getShortUrl` | GET `/short-urls/{code}` | ✅ | 含 `domain` 查询参数 |
@@ -32,11 +32,11 @@
 | 19 | `deleteTags` | DELETE `/tags` | ✅ | `tags[]` 查询串，空响应 |
 | 20 | `listDomains` | GET `/domains` | ✅ | 含 `defaultRedirects` |
 | 21 | `editDomainRedirects` | PATCH `/domains/redirects` | ✅ | 三项回退地址 |
-| 22 | `getShortUrlRedirectRules` | GET `/short-urls/{code}/redirect-rules` | ✅ | 返回 `{defaultLongUrl, redirectRules: []}`（恒空） |
-| 23 | `setShortUrlRedirectRules` | POST/PATCH `/short-urls/{code}/redirect-rules` | ⚠️ | **501**（计划 M3；页面可打开、保存报明确错误） |
+| 22 | `getShortUrlRedirectRules` | GET `/short-urls/{code}/redirect-rules` | ✅ | 返回 `{defaultLongUrl, redirectRules}`，**真读规则表**（I9） |
+| 23 | `setShortUrlRedirectRules` | POST/PATCH `/short-urls/{code}/redirect-rules` | ✅ | **I9 已实现**：11 种条件类型 + 值域校验，非法值 400 `invalid-data` |
 | 24 | `mercureInfo` | GET `/mercure-info` | ⚠️ | **404 `MERCURE_NOT_CONFIGURED`**（未配置 Mercure，界面自动降级） |
 
-**小计：21 ✅ / 2 ⚠️ / 1 ❌。** 23 个契约方法（不含 `shorten`）里，只有 `setShortUrlRedirectRules` 是 501、`mercureInfo` 是 404 降级。
+**小计：22 ✅ / 1 ⚠️ / 1 ❌。** 23 个契约方法（不含 `shorten`）里只剩 `mercureInfo` 是 404 降级；`setShortUrlRedirectRules` 自 I9 起不再是 501。
 
 ---
 
@@ -45,11 +45,11 @@
 | 能力 | shlink | rxlink | 说明 |
 |---|---|---|---|
 | 短链跳转 `/{code}` | ✅ | ✅ | 302 固定；实例内存快照 + `link_version` 失效；forwardQuery、有效期、maxVisits、停用、404 回退（域名级优先/占位符/双斜杠折叠） |
-| 追踪像素 `/{code}/track` | ✅ | ❌ | 1×1 gif，用于邮件/埋点追踪；**线上实测 404** |
-| `robots.txt` | ✅ | ❌ | 按 `crawlable` 列出 Allow、Disallow `/rest/`；**线上实测 404** → `crawlable` 字段目前无实际效果 |
+| 追踪像素 `/{code}/track` | ✅ | ✅ | 1×1 gif（`image/gif`），用于邮件/埋点追踪；**线上实测 200** |
+| `robots.txt` | ✅ | ✅ | 按 `crawlable` 列出 `Allow: /<码>` + `Disallow: /`；**线上实测 200** |
 | QR 码 | ✅（v5 起客户端生成，服务端无 `/qr-code` 路由） | ✅ | 控制台内生成，口径一致 |
 | 多段 slug / extraPath | ✅（default/append/ignore 三模式） | ❌ | **D3 本期不支持**；短码锁单段 `[a-z0-9_-]{1,64}` |
-| 动态跳转规则 | ✅ | ⚠️ | 条件类型：device / language / query-param / any-value / valueless / ip-address / geolocation-country / geolocation-city / before-date / after-date / browser。rxlink 只读，保存 501 |
+| 动态跳转规则 | ✅ | ✅ | **I9 已实现**：device / browser / language / query-param / any-value-query-param / valueless-query-param / ip-address / geolocation-country-code / geolocation-city-name / before-date / after-date。规则保存不 bump `link_version`，走独立 `rules_version` |
 | 地理定位 | ✅（GeoLite2） | ✅ | DB-IP City Lite（免 key、可商用）；**无 `time_zone` 字段** → `visit.timezone` 恒 NULL |
 | Bot 识别 | ✅（crawler-detect 库） | ✅ | rxlink 用 `ua_rule` 规则表 + `ua_parse`，覆盖较简 |
 | API key 角色/作用域 | ✅（**上游已标 `@deprecated`**） | ⚠️ | rxlink 有 `api_key_role` 表结构，但兼容层 `authenticate()` 只校验 key 有效性，不校验角色 |
@@ -75,7 +75,7 @@ rxlink 控制台直接用同一套 build 产物，因此**页面与交互全部�
 | 创建短链 | `/create-short-url` | ✅ | |
 | 编辑短链 | `/short-code/:shortCode/edit` | ✅ | |
 | 短链访问明细 | `/short-code/:shortCode/visits` | ✅ | 地理列（DB-IP 结果） |
-| 跳转规则 | `/short-code/:shortCode/redirect-rules` | ⚠️ | 页面可打开、显示空规则；保存 501 |
+| 跳转规则 | `/short-code/:shortCode/redirect-rules` | ✅ | 可读可存；条件类型下拉随兼容层 `version` 决定（≥5.1.0 出 11 种） |
 | 对比访问（短链） | `/short-urls/compare-visits` | ✅ | 客户端对比，调同一批 visits 端点 |
 | 标签访问 | `/tag/:tag/visits` | ✅ | |
 | 对比访问（标签） | `/tags/compare-visits` | ✅ | |
@@ -96,19 +96,18 @@ rxlink 控制台直接用同一套 build 产物，因此**页面与交互全部�
 
 ## D. 明确不做（YAGNI，已写进 `handover.md` §7.3）
 
-多段 slug（D3）、存量数据搬迁（D5）、UV 口径（无 salt）、Mercure 实时推送、跳转规则（M3 前 501）、地理富化不进热路径、付费版功能。
+多段 slug（D3）、存量数据搬迁（D5）、UV 口径（无 salt）、Mercure 实时推送、地理富化不进热路径、付费版功能。
 
 ---
 
 ## E. 结论与缺口（按建议优先级）
 
-**已覆盖**：REST 21/24 动作；UI 21 项功能里 17 项全通、3 项降级（跳转规则 / 域名红标 / 实时更新）、1 项无（中文界面）；核心链路（跳转 / 统计 / 标签 / 域名 / 地理 / 404 回退 / 死链清理）全部上线并验收。
+**已覆盖**：REST 22/24 动作；UI 21 项功能里 18 项全通、2 项降级（域名红标 / 实时更新）、1 项无（中文界面）；核心链路（跳转 / 统计 / 标签 / 域名 / 地理 / 404 回退 / 死链清理 / **动态跳转规则**）全部上线并验收。
 
 | 优先级 | 缺口 | 成本 | 建议 |
 |---|---|---|---|
 | 中 | `robots.txt`（`crawlable` 字段现在无效） | 低（跳转函数加一个分支） | 要做就顺手做，对 SEO 有意义 |
 | 中 | 追踪像素 `/{code}/track` | 低（返回 1×1 gif + 记一条访问） | 有邮件追踪需求再做 |
-| 高 | 动态跳转规则保存（M3） | 高（规则表 + 条件解析 + 热路径改造） | 按迭代计划 M3 单独立项 |
 | 低 | API key 过期 | 低（加列 + 鉴权检查） | 角色已上游废弃，可只做过期 |
 | 低 | 时区字段 | 中（换带 `time_zone` 的 mmdb 源） | 控制台不渲染，可不做 |
 | 低 | CLI / Matomo / Importer | 高 | 运营增强，非核心；按需 |
@@ -120,7 +119,8 @@ rxlink 控制台直接用同一套 build 产物，因此**页面与交互全部�
 - REST 动作清单：`shlink/config/autoload/routes.config.php` + `module/Rest/src/Action/**` 的 `ROUTE_PATH` 常量（24 条）。
 - UI 路由清单：`shlink-web-client/src/app/App.tsx:49-62` + `@shlinkio/shlink-web-component/dist/index.js:7211-7286` + `settings-BOILmGcF.js:529-564`。
 - SDK 端点清单：`@shlinkio/shlink-js-sdk/dist/` 中出现的路径（`/short-urls`、`/short-urls/{code}`、`/short-urls/{code}/visits`、`/short-urls/{code}/redirect-rules`、`/tags`、`/tags/stats`、`/tags/{tag}/visits`、`/visits`、`/visits/orphan`、`/visits/non-orphan`、`/domains`、`/domains/redirects`、`/domains/{domain}/visits`、`/health`、`/mercure-info`）——**不含 `/short-urls/shorten`**，与契约 §3 注一致。
-- 线上实测（2026-11-11）：`curl -o /dev/null -w "%{http_code}" https://example.com/robots.txt` → **404**；`https://example.com/abcdefgh/track` → **404**。
-- 跳转规则 501 / Mercure 404：`supabase/functions/compat/handler.ts:446-456`。
+- 线上实测（2026-11-12）：`https://example.com/robots.txt` → **200**（含 `Allow: /9e6h3`）；`https://example.com/2b9yj/track` → **200**（`Content-Type: image/gif`）；`/2b9yj` → **302**。
+- 跳转规则端点（I9）：`supabase/functions/compat/handler.ts` 的 `GET|POST|PATCH /short-urls/{code}/redirect-rules`；条件类型白名单与值域校验见同文件 `CONDITION_TYPES` / `validateCondition`。
+- Mercure 404：`supabase/functions/compat/handler.ts` 的 `/mercure-info` 分支。
 - API key 角色未校验：`supabase/functions/compat/handler.ts:123-131`（`authenticate` 只查 `api_key`，不查 `api_key_role`）；上游 `module/Rest/src/ApiKey/Role.php` 标注 `@deprecated`。
 - 中文界面结论：`shlink-web-client/src` 全量 grep 无 i18n；上游 issue `shlinkio/shlink-web-client#31` 状态 `wontfix`（2018-11-02）。

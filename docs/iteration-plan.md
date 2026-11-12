@@ -273,6 +273,31 @@
 
 ---
 
+## I9 —— R9 动态跳转规则
+
+> **状态：兼容层与数据面已上线并验收（2026-11-12）；跳转函数待上传 zip。** 迁移 0018/0019 已应用、兼容层已部署（version 5.1.0）、11 种条件端到端线上验通；`fc/redirect` 的规则接入已完成并本机全绿，等用户把 `dist/redirect.zip` 上传到 FC 后做跳转侧线上验收。
+> 设计：`docs/superpowers/specs/2026-11-12-r9-dynamic-redirect-rules-design.md`；实施计划：`docs/superpowers/plans/2026-11-12-r9-dynamic-redirect-rules.md`；验证记录：`docs/verification/i9-results.md`。
+
+**目标**：让 shlink 的动态跳转规则从「只读、恒空」变成「可存、可用」——控制台能保存 11 种条件的规则，跳转时按规则求值并跳到规则指定的目标。
+
+**范围**
+
+1. **规则求值（`fc/redirect/rules.js`）**：纯函数、零依赖、可单测；口径对齐 `shlink/module/Core/src/RedirectRule/Entity/RedirectCondition.php`。规则内条件 AND、空条件永不命中、priority 升序首命中即停、单条件出错降级为不匹配。
+2. **geo 数据（`fc/redirect/china-geo.js` + `scripts/build-china-geo.mjs`）**：从 DB-IP City Lite mmdb 抽成 `china-geo.bin` 随包发布（197KB，不挂 Layer）；只覆盖中国大陆 31 省级，中英文省名都认。构建期做 20 万次随机 IP 对拍自检。
+3. **数据面（迁移 0018/0019）**：`short_url_redirect_rule` + `redirect_condition` + `rules_version`（**独立于 `link_version`**）；`redirect_rules_json` / `set_short_url_redirect_rules` / `get_short_url_redirect_rules` / `rules_seq` / `rules_snapshot`；`resolve_short` 加 `rules` 列；`short_url_json.hasRedirectRules` 动态化；`list_short_urls` 加 `p_excluded_tags` + `p_excluded_tags_mode`（版本旋钮 5.1.0 的连带项）。
+4. **兼容层（`handler.ts`）**：`GET/POST|PATCH /short-urls/{code}/redirect-rules` 从固定 501 变为真实现；11 种条件类型白名单 + 值域校验（非法值 400 `invalid-data`）；`VERSION` 4.0.0 → 5.1.0。
+5. **跳转接入（`fc/redirect/rules-cache.js` + `index.js`）**：独立的 `rules_version` 轮询通道（默认 5s），命中规则跳规则目标、不命中跳默认长链；`forward_query` 同样作用在规则目标上；geo 表只在规则里真的出现 geo 条件时才读盘。
+
+**出口判据**：见 B9。
+
+**关键设计决策**
+
+- 规则**不进主快照**：规则是高频写操作，若与 `link_version` 共用 seq，每存一次规则就要让全网实例重拉全量短链快照 —— 代价不对等。规则走独立的 `rules_version` + 只含「有规则的短链」的小快照。
+- geo 只做国内省级：海外 IP 一律不命中 geo 条件；`geolocation-country-code` 实际只匹配 `CN`。
+- 版本旋钮提到 **5.1.0** 而不是 4.x：控制台靠 `version` 决定「跳转规则」页列出几种条件类型，不一起补 `excludeTags` 筛选就会出现静默错误（勾了没反应）。
+
+---
+
 # 【B】验收清单
 
 > 规则：每条都要附**证据**（命令输出 / 截图 / SQL 结果），只写「已完成」不算。上一轮有未勾项，下一轮不启动。
@@ -393,6 +418,30 @@
 
 ---
 
+## B9 —— I9 R9 动态跳转规则
+- [x] 迁移 0018 逐条应用成功（2026-11-12），应用前建 `funcdef_bak_20261112`（4 个函数定义，RLS + revoke 收口）
+- [x] 0018 断言：规则增删改只 bump `rules_seq`（0→5），`link_version.seq` 恒为 97 不动；级联删除生效；`rules_snapshot()` 只返回有规则的短链；无重载残留
+- [x] 0019 应用成功；`list_short_urls` 排除标签 6 条断言全通过（基线 3 / exclude x(all)→2 / x(any)→2 / x+i3(any)→1 / x+i3(all)→3 / 不存在标签→3）
+- [x] 规则求值单测 `rules` 20/20；geo 查表单测 `china-geo` 6/6；`ipmat` 8/8；跳转回归 `redirect` 40/40（新增 8 条 I9 用例）
+- [x] geo 二进制独立校验：32 省名（31 有中文名 + 1 空名）、22,337 区间、0 重叠、0 provId 越界；抽样 `120.235.196.208→广东`、`8.147.181.152→北京`
+- [x] geo 构建自检：120,141 前缀 → 22,337 区间 → 197KB；20 万随机 IP 对拍失配 0
+- [x] 兼容层单测 `compat` 30/30（新增 14 条 I9 用例）；`deno check` 全绿
+- [x] compat 部署（`functions-cli … -d supabase/functions/compat/dist`，status ACTIVE）；`/health` → `version: 5.1.0`
+- [x] 线上 GET `/short-urls/2b9yj/redirect-rules` → 200 `{defaultLongUrl, redirectRules:[]}`
+- [x] 线上 POST 合法规则 → 200，`priority` 1..11 递增，11 种条件类型全部接受
+- [x] 线上 POST 非法 `device=desktop2` → 400 `invalid-data`，detail 指出非法值
+- [x] 线上 seq 独立性复验：改一次规则 `rules_seq` 31→55、`link_seq` 恒 101
+- [x] 线上测试规则已清空（`short_url_redirect_rule` 0 行 / `redirect_condition` 0 行）
+- [x] `dist/redirect.zip` 重打包（7 个文件，含 `china-geo.bin`），待上传
+- [ ] **他上传 `dist/redirect.zip` 到 FC 跳转函数并部署**
+- [ ] 线上跳转验收：写一条 `query-param src=wechat` 规则 → `?src=wechat` 跳规则目标、`?src=other` 跳默认长链（等 ≤6s 让规则缓存生效）
+- [ ] 线上 geo 条件验收：国内 IP 命中省名规则，境外 IP 不命中
+- [ ] 控制台界面人工验收：跳转规则页能存能删、条件类型下拉出 11 种、排除标签筛选生效、各页 Network 无 4xx（`mercure-info` 除外）
+- [ ] 性能抽查：有规则 vs 无规则的 20 次最小耗时差 < 5ms
+- [x] 验收归档：`docs/verification/i9-results.md`
+
+---
+
 # 【C】整体迭代进度清单
 
 > 这是唯一需要频繁更新的表。每轮结束后改这里的「状态 / 实际起止 / 备注」，并在下方变更记录加一行。
@@ -407,6 +456,8 @@
 | I5 | 控制台补全（B3/B4） | **已验收** | I4 | B5 全勾 | 2026-11-09 → 2026-11-10 | `0010` 七个 RPC + 9 条路由；用户 FC 函数 `console-prod` + 证书，正式域名页面/资源/深链/SW/跨域 API 全通，见 `docs/verification/i5-results.md` |
 | I6 | 生产硬化 | **已验收** | I5 | B6 全勾 | 2026-11-10 当日 | 探针退场/prune 转真/压测(p95 416ms)/可观测/runbook/HTTPS 复测全通（B6 6/6；cdndev 放弃），见 `docs/verification/i6-results.md` |
 | I7 | 地理富化（#41–#44） | **进行中（主体已上线）** | I6 | B7 全勾 | 2026-11-10 → 2026-11-11 | #41 迁移 0012 + #42 跳转/drain 带 remote_addr + #43 富化函数 + #44 契约与兜底**全部上线**；换源 DB-IP；`0013` 修回写失配；mmdb 随 Layer 分发 + 触发改每小时；`0014` 收紧入队侧 IP 留存（线上 inbox 持 IP 291→0）；FC 富化函数手动跑通 275/275；真实流量端到端探针闭环；DB-IP 署名代码完成（7 单测）；**剩他两个动作**：重传 `console.zip`、确认触发器 cron 是 6 字段 |
+| I8 | M2 收尾批次（R1–R8） | **已验收** | I7 | B8 全勾 | 2026-11-11 当日 | 迁移 0015–0017 + 跳转 R1/R2/R3/R8 + 兼容层 R4/R6/R7 + cron R5 全上线；compat 改单文件构建包；见 `docs/verification/i8-results.md` |
+| I9 | R9 动态跳转规则 | **进行中（兼容层与数据面已上线验收）** | I8 | B9 全勾 | 2026-11-12 | 迁移 0018/0019 已应用；兼容层 version 5.1.0 已部署，11 种条件端到端线上验通；`rules.js` + `china-geo.bin` + `rules-cache.js` 本机全绿（redirect 40/40）；**剩他上传 `dist/redirect.zip` 到 FC**，之后做跳转侧线上验收 |
 
 状态词只用四个：**未开始 / 进行中 / 待他拍板 / 已验收**。
 
@@ -442,4 +493,5 @@
 | 2026-11-11 | 采纳用户两条建议：① mmdb 改为随包分发（brotli q6 → 52.35MB，走 FC Layer，运行时不联网、不出公网，冷启动 15.5s→1.0s，省每月约 29 元出网流量；新增 `build-geoip-bundle.mjs` / `build-geo-enrich-fc.mjs` 两个可复现构建脚本）② 定时触发器由每分钟改每小时（批处理上限 5→20 批，另加 45s 时间预算防超时）；单测 20→24 例 |
 | 2026-11-11 | I7 主体完成：跳转包已上传（线上实测有真实流量带 remote_addr）；**发现并修 `apply_visit_locations` 回写失配** —— PostgREST 的 timestamptz 只有毫秒精度，`(id, occurred_at)` 双条件对亚毫秒行必然失配（实测 0 行、IP 不清）→ 新增 `0013` 改为只按 `id` 匹配（id 全局唯一）+ 单条 set-based UPDATE；**换源 MaxMind → DB-IP City Lite**（MaxMind 免费版「仅个人使用」不适配对外服务，DB-IP 免注册免 key 且 CC BY 4.0 允许商用，代价是无 time_zone 字段）；`fc/geo-enrich/` 实现完成（lib 纯逻辑 + index handler，20 例单测全绿），真实 mmdb 端到端跑通（拉批 15 / 回写 15 / 369ms，库内 location 落、IP 清零）；`dist/geo-enrich.zip` 已打包待部署 |
 | 2026-11-11 | I7 上线与收尾：用户部署 FC 富化函数（Layer + 代码包 + 环境变量 + 每小时触发器），手动执行 `{"ok":true,"batches":1,"pulled":275,"updated":275}`，库内 291 行有地理结果、`ip_pending=0`；**新增 `0014`** 覆盖 `drain_visit_inbox`，落库后立即清空 `visit_inbox.remote_addr`（入队侧 IP 留存从最长 1 天 → 分钟级，线上 inbox 持 IP 行 291→0），DO 块断言「inbox 清空 + visit 仍拿到 IP」通过；真实流量端到端探针闭环（`x-forwarded-for: 8.8.8.8` → US·California·Mountain View）；**DB-IP 署名**实现在 `fc/console/index.js` 注入页脚（不重编 Angular，7 例单测全绿），`dist/console.zip` 已重打包待上传；权限复核：visit/visit_inbox 均 force RLS + 0 policy，anon/authenticated 无表级与列级授权；`design/`（另一任务产物，21MB）移出版本控制，文件保留在工作区 |
+| 2026-11-12 | I9 R9 动态跳转规则启动：设计稿与实施计划定稿（`docs/superpowers/specs|plans/2026-11-12-r9-dynamic-redirect-rules*`）；`rules.js` 条件求值（20/20）、`china-geo.bin` 中国省级表（6/6 + 20 万 IP 对拍）、迁移 0018/0019（规则表 + 独立 `rules_version` + 排除标签筛选）、兼容层 11 种条件校验 + version 5.1.0（30/30）、跳转函数 `rules-cache.js` 接入（redirect 40/40）；**关键设计**：规则写操作只 bump `rules_version`，`link_version` 恒不动（线上复验 31→55 vs 恒 101）；计划里的代码块全部先实跑再落地，抓出 4 处真 bug（含两处 forward_query 断言错误）
 | 2026-11-11 | I8 收尾批次完成并验收：迁移 0015–0017 应用 + 断言（备份表已建）、cron job 10 `rxlink-expired`；跳转函数 R1/R2/R3/R8（404 HTML / 追踪像素 / robots.txt / 追踪开关，单测 40/40）与兼容层 R4/R6/R7（shorten / 访问导出 / key 过期，单测 15/15）上线；compat 部署改单文件构建包（`scripts/build-compat-function.mjs`，消除多文件歧义）；线上 R1–R8 全通、测试数据已清；git `2437179`；归档 `docs/verification/i8-results.md` |

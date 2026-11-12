@@ -8,7 +8,7 @@
 
 | 层 | 组件 | 地址 / 标识 | 代码 |
 |---|---|---|---|
-| 跳转热路径 | FC Web 函数（Node 20） | 自定义域名 `example.com`（已配证书 + 强制 HTTPS），路由 `/*` | `fc/redirect/index.js` + `cache.js` |
+| 跳转热路径 | FC Web 函数（Node 20） | 自定义域名 `example.com`（已配证书 + 强制 HTTPS），路由 `/*` | `fc/redirect/index.js` + `cache.js` + `ipmat.js` + `rules.js` + `rules-cache.js` + `china-geo.js`（+ 构建产物 `china-geo.bin`） |
 | 数据面 | ADB PostgreSQL Supabase | API host `https://your-project-ref.supabase.co`；FC 走 **VPC 内网地址** | `supabase/migrations/` |
 | 兼容层 | Supabase Edge Function `compat` | `…/functions/v1/compat/rest/v3/*`（shlink 契约） | `supabase/functions/compat/index.ts` |
 | 控制台 | FC Web 函数 `console-prod` | `https://console.example.com`（已配证书 + 强制 HTTPS） | `shlink-web-client/` build → `fc/console/index.js` |
@@ -17,7 +17,7 @@
 | IP 兜底清理 | cron `rxlink-retire-ip`（job 9，每小时） | `retire_remote_addr(7)`（7 天硬留存上限） | `0012` |
 | 地理富化 | FC 事件函数 `geo-enrich`（**已部署**） | 请求处理程序 `index.handler`；定时触发器**每小时**（cron 6 字段：`0 0 * * * *`）；mmdb 在 Layer `/opt/geoip/` | `fc/geo-enrich/`（数据源 DB-IP City Lite） |
 
-关键表：`short_url`、`domain`（id 0 = 默认域名 `example.com`）、`visit_inbox`（UNLOGGED 热路径入队）、`visit`（按月分区明细）、`short_url_visits_counts`、`link_version`（单行 seq，缓存失效依据）、`api_key`（只存 sha256）。
+关键表：`short_url`、`domain`（id 0 = 默认域名 `example.com`）、`visit_inbox`（UNLOGGED 热路径入队）、`visit`（按月分区明细）、`short_url_visits_counts`、`link_version`（单行 seq，主快照失效依据）、`rules_version`（单行 seq，**跳转规则**失效依据，与 link_version 互不干扰）、`short_url_redirect_rule` + `redirect_condition`（规则与条件）、`api_key`（只存 sha256）。
 
 ## 2. 连接与凭据（只列变量名）
 
@@ -37,7 +37,8 @@ select
      from visit_inbox where processed_at is null)::text as inbox_oldest_sec,
   (select coalesce(extract(epoch from (now()-max(start_time)))::int,-1)
      from cron.job_run_details where jobid=6 and status='succeeded')::text as drain_last_success_sec,
-  (select seq from link_version where id=1)::text as link_seq;
+  (select seq from link_version where id=1)::text as link_seq,
+  (select seq from rules_version where id=1)::text as rules_seq;
 ```
 
 告警阈值（建议）：
@@ -142,9 +143,13 @@ curl -s "$base/short-urls/shorten?longUrl=https%3A%2F%2Fexample.com%2Fa&apiKey=$
 
 ### 5.1 跳转函数（fc/redirect）
 
-- 部署：把 `index.js` + `cache.js` 打包上传到 FC 跳转函数（Web 函数，启动命令 `node index.js`，监听 `0.0.0.0:${FC_SERVER_PORT:-9000}`）。
+- 部署：把 `index.js` + `cache.js` + `ipmat.js` + `rules.js` + `rules-cache.js` + `china-geo.js` + `china-geo.bin` 打包上传到 FC 跳转函数（Web 函数，启动命令 `node index.js`，监听 `0.0.0.0:${FC_SERVER_PORT:-9000}`）。
   ```bash
-  cd fc/redirect && zip -r ../../dist/redirect.zip index.js cache.js
+  # china-geo.bin 是构建产物（gitignore），打包前必须先构建/确认存在
+  ls -la fc/redirect/china-geo.bin || node scripts/build-china-geo.mjs
+  cd fc/redirect && zip -r ../../dist/redirect.zip \
+    index.js cache.js ipmat.js rules.js rules-cache.js china-geo.js china-geo.bin
+  unzip -l ../../dist/redirect.zip   # 必须 7 个文件都在
   ```
   FC 控制台 > 函数 > 代码上传 `dist/redirect.zip` > 部署。环境变量两条见 §2；触发器**无需认证**；**最小实例数 ≥ 1**；保持 VPC 访问开启。
 - 回滚：上传上一版 zip 重新部署即可；代码与 zip 都不手改。改源码后必须重新打包。
@@ -174,9 +179,22 @@ SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli deploy compat \
 - 为什么多一步构建：`functions-cli` 的部署包以入口文件为准，多文件/静态资源支持有歧义（I5 实测 `.txt` 进不了部署包，官方文档又写 `index.ts + foo.ts` 可多文件）。部署统一走单文件构建产物，消除歧义；本地开发与单测仍直接用 `handler.ts`。
 - 改代码后：`handler.ts` 是唯一改动点；`index.ts` 只是本地入口，`dist/index.ts` 由脚本生成（gitignore）。
 - 回滚：`git checkout <旧 commit> -- supabase/functions/compat/handler.ts` → 重新 build → 重新 deploy；或回退整个 commit 后同样走一遍。
-- 验证：`curl …/functions/v1/compat/rest/v3/health` → `{"status":"pass","version":"4.0.0"}`；再带 key 打一个真实路由（如 `GET /rest/v3/short-urls?itemsPerPage=1`）。
+- 验证：`curl …/functions/v1/compat/rest/v3/health` → `{"status":"pass","version":"5.1.0"}`；再带 key 打一个真实路由（如 `GET /rest/v3/short-urls?itemsPerPage=1`）。
 
-### 5.4 数据库迁移
+### 5.4 跳转规则（I9 / R9）
+
+- **数据**：`short_url_redirect_rule` + `redirect_condition`；失效走独立的 `rules_version`（**不是** `link_version`）。规则写入**不会**让全网实例重拉主快照。
+- **兼容层**：`GET/POST|PATCH /rest/v3/short-urls/{code}/redirect-rules`。
+- **跳转**：命中规则 → 跳规则里的 `longUrl`；不命中 → 跳短链默认长链。规则保存后 ≤5s（`RULES_POLL_MS`）生效。
+- **支持的 11 种条件**：`device` / `browser` / `language` / `query-param` / `any-value-query-param` / `valueless-query-param` / `ip-address` / `geolocation-country-code` / `geolocation-city-name` / `before-date` / `after-date`。
+- **geo 只覆盖中国大陆 31 省级**：`geolocation-country-code` 实际只匹配 `CN`；`geolocation-city-name` 匹配省名（中英文都认）。海外 IP 不命中 geo 条件；IPv6 不做 geo 匹配。
+- **数据文件**：`fc/redirect/china-geo.bin`（构建产物，已 gitignore）。重建：`node scripts/build-china-geo.mjs`（约 70 秒）。改了 DB-IP mmdb 后要重建并重打 `dist/redirect.zip`。
+- **排查**：
+  1. 规则没生效 → 先看 `select seq from rules_version where id=1;`，再确认 FC 实例的 `rules snapshot ready` 日志里的 seq 是否跟上（seq 落后 → 轮询或网络问题）。
+  2. 规则保存报 400 → 是条件值域校验（见设计稿 §5.3）；文案里会指出是哪个值非法。
+  3. geo 条件不命中 → 确认 `fc/redirect/china-geo.bin` 在包里（`unzip -l dist/redirect.zip`），以及客户端是不是 IPv6（IPv6 不做 geo 匹配）。
+
+### 5.5 数据库迁移
 
 - 迁移文件是**已应用历史**，不改不删；新变更写新编号文件，逐条 `supabase db query` 执行（或控制台 SQL Editor）。
 - 回滚靠新迁移补偿（如重新 `enabled=true`、补列），不做破坏性 down。
@@ -197,7 +215,7 @@ SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli deploy compat \
 4. 明细在 `visit` 按月分区；跨月查不到先确认分区已建（`ensure_visit_partition()`）。
 
 ### C. 控制台连不上 / 报错
-1. 页脚版本是否 `4.0.0`；Add server 的 URL 应为 `…/functions/v1/compat`，key 为 `rxl_…`。
+1. 页脚版本是否 `5.1.0`；Add server 的 URL 应为 `…/functions/v1/compat`，key 为 `rxl_…`。
 2. `curl …/compat/rest/v3/health` 与带 `X-Api-Key` 的 `…/short-urls`：401 ⇒ key 错/被删（`api_key` 只存哈希，重新生成 §3.3）；CORS 报错 ⇒ 兼容层 CORS 配置。
 3. Domains 页红标：健康检查走短链域名，`…/health` 路径被跳转函数兜底返回 404 ⇒ 必红（§4 第 7 步），非故障。
 4. 跳转规则保存报 501：`POST /short-urls/{code}/redirect-rules` 尚未实现（M3），预期行为。
