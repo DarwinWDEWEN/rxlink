@@ -2434,7 +2434,7 @@ test('I9：规则命中 → 302 到规则的 longUrl', async () => {
   await new Promise((r) => setTimeout(r, 300));
   const res = await req('/known1?src=wechat');
   assert.equal(res.status, 302);
-  assert.equal(res.headers.location, 'https://target.example/rule');
+  assert.equal(res.headers.location, 'https://target.example/rule?src=wechat');
 });
 
 test('I9：规则不命中 → 302 到默认 longUrl', async () => {
@@ -2443,7 +2443,7 @@ test('I9：规则不命中 → 302 到默认 longUrl', async () => {
   await new Promise((r) => setTimeout(r, 300));
   const res = await req('/known1?src=other');
   assert.equal(res.status, 302);
-  assert.equal(res.headers.location, 'https://target.example/ok');
+  assert.equal(res.headers.location, 'https://target.example/ok?src=other');
 });
 
 test('I9：规则 + forward_query → query 拼在规则目标上', async () => {

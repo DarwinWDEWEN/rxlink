@@ -8,6 +8,9 @@ const http = require('http');
 const crypto = require('crypto');
 const cache = require('./cache');
 const ipmat = require('./ipmat');
+const rules = require('./rules');
+const rulesCache = require('./rules-cache');
+const chinaGeo = require('./china-geo');
 
 const BASE = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -20,6 +23,9 @@ const SEQ_PATH = '/rest/v1/rpc/link_seq';
 const SNAPSHOT_PATH = '/rest/v1/rpc/snapshot_short_links';
 const FALLBACK_PATH = '/rest/v1/rpc/not_found_redirects';
 const ROBOTS_PATH = '/rest/v1/rpc/robots_crawlable_codes';
+// I9：规则走独立通道（rules_version），与主快照的 link_version 互不干扰
+const RULES_SEQ_PATH = '/rest/v1/rpc/rules_seq';
+const RULES_SNAPSHOT_PATH = '/rest/v1/rpc/rules_snapshot';
 const CODE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const PORT = Number(process.env.FC_SERVER_PORT || 9000);
 
@@ -66,6 +72,8 @@ async function resolve(code, domain) {
     validSince: null,
     validUntil: null,
     visitsLimited: false,
+    // 规则缓存未就绪时的回落：resolve_short 也能带 rules
+    rules: Array.isArray(rows[0].rules) ? rows[0].rules : null,
   };
 }
 
@@ -118,6 +126,26 @@ function fullUrl(req) {
   return `${proto}://${req.headers.host || ''}${req.url || ''}`;
 }
 
+// geo 查表懒加载：200KB 的表不该为「跟 geo 无关的规则」付代价。
+// 只有规则里真的出现 geo 条件才读文件。
+let geoLookup = null;
+function getGeoLookup() {
+  if (geoLookup) return geoLookup;
+  try {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const file = path.join(__dirname, 'china-geo.bin');
+    const lookup = chinaGeo.createLookup(fs.readFileSync(file));
+    geoLookup = lookup;
+    console.log('china geo table loaded');
+  } catch (err) {
+    // 数据文件缺失 → geo 条件一律不匹配（静默降级，不影响其他条件）
+    geoLookup = () => null;
+    console.warn(`china-geo.bin unavailable: ${err && err.message}`);
+  }
+  return geoLookup;
+}
+
 function withinValidity(entry, now) {
   if (entry.validSince && Date.parse(entry.validSince) > now) return false;
   if (entry.validUntil && Date.parse(entry.validUntil) <= now) return false;
@@ -154,6 +182,36 @@ function fillPlaceholders(template, domain, originalPath) {
     // 配置不是合法 URL：原样返回（shlink 打 warning 后也按原样用）
     return template;
   }
+}
+
+// I9：规则来源。查库直读的 rules（resolve_short 带回来，更鲜）优先于规则缓存的快照；
+// 主快照命中时 entry 里没有 rules 字段，只能走规则缓存。
+function pickRules(entry) {
+  const inline = Array.isArray(entry.rules) ? entry.rules : null;
+  if (inline && inline.length) return inline;
+  const cached = rulesCache.ready() ? rulesCache.get(entry.id) : null;
+  return cached && cached.length ? cached : null;
+}
+
+const GEO_CONDITION_TYPES = new Set(['geolocation-country-code', 'geolocation-city-name']);
+
+// 规则求值：命中第一条规则的 longUrl，否则落回默认长链
+function resolveTargetUrl(entry, req, query) {
+  const ruleList = pickRules(entry);
+  if (!ruleList || ruleList.length === 0) return entry.longUrl;
+  const needsGeo = ruleList.some((r) =>
+    Array.isArray(r.conditions) && r.conditions.some((c) => c && GEO_CONDITION_TYPES.has(c.type))
+  );
+  const ctx = rules.buildContext({
+    query: Object.fromEntries(query.entries()),
+    ua: req.headers['user-agent'] || '',
+    ip: clientIp(req),
+    now: Date.now(),
+    acceptLanguage: req.headers['accept-language'] || '',
+    geoLookup: needsGeo ? getGeoLookup() : () => null,
+  });
+  const hit = rules.evaluate(ruleList, ctx);
+  return hit || entry.longUrl;
 }
 
 // R8：命中即不记访问。HEAD 由 shlink 的 ImplicitHeadMiddleware 转发后按 HEAD 处理，同样不记。
@@ -362,7 +420,7 @@ const server = http.createServer(async (req, res) => {
     return replyNotFound(req, res, visit, 'invalid_short_url', timing, snapshot, !skipTracking);
   }
 
-  let location = entry.longUrl;
+  let location = resolveTargetUrl(entry, req, query);
   if (entry.forwardQuery) location = withQuery(location, req);
 
   try {
@@ -391,4 +449,22 @@ server.listen(PORT, '0.0.0.0', () => {
 // 首拉失败不影响起服务：cache 未就绪时请求自动走查库路径
 cache.init({ seq: readSeq, snapshot: readSnapshot }).then(() => {
   console.log(`snapshot ready ${JSON.stringify(cache.stats())}`);
+});
+
+// 规则缓存独立通道：自己的 seq（rules_version），不与 link_version 混用
+rulesCache.init({
+  seq: async () => {
+    const res = await gateway(RULES_SEQ_PATH, {});
+    if (!res.ok) throw new Error(`rules seq ${res.status}`);
+    const value = await res.json();
+    return typeof value === 'number' ? value : null;
+  },
+  snapshot: async () => {
+    const res = await gateway(RULES_SNAPSHOT_PATH, {});
+    if (!res.ok) throw new Error(`rules snapshot ${res.status}`);
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows : [];
+  },
+}).then(() => {
+  console.log(`rules snapshot ready ${JSON.stringify(rulesCache.stats())}`);
 });

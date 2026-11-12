@@ -3,11 +3,12 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 
 const HOST = 'short.example';
-const state = { fallbacks: {}, inbox: [], failFallback: false, robotsCodes: ['crawl1', 'crawl2'] };
+const state = { fallbacks: {}, inbox: [], failFallback: false, robotsCodes: ['crawl1', 'crawl2'], rulesSeq: 1, rules: [] };
 let mock;
 let child;
 let base;
@@ -36,10 +37,17 @@ before(async () => {
     }
     if (url === '/rest/v1/rpc/resolve_short') {
       if (body.p_code === 'known1') {
-        return json(res, [{ short_url_id: 1, long_url: 'https://target.example/ok', forward_query: true }]);
+        return json(res, [{
+          short_url_id: 1,
+          long_url: 'https://target.example/ok',
+          forward_query: true,
+          rules: state.rules.length ? state.rules[0].rules : null,
+        }]);
       }
       return json(res, []);
     }
+    if (url === '/rest/v1/rpc/rules_seq') return json(res, state.rulesSeq);
+    if (url === '/rest/v1/rpc/rules_snapshot') return json(res, state.rules);
     if (url === '/rest/v1/rpc/robots_crawlable_codes') {
       return json(res, state.robotsCodes);
     }
@@ -71,6 +79,8 @@ before(async () => {
       SUPABASE_SERVICE_ROLE_KEY: 'test-key',
       FC_SERVER_PORT: '19101',
       CACHE_POLL_MS: '3600000',
+      // 规则缓存默认轮询 5 秒，测试只等 300ms —— 不缩短间隔新用例永远读到旧规则
+      RULES_POLL_MS: '50',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -507,4 +517,87 @@ test('R8 DISABLE_REFERRER_TRACKING：记访问但 referer 为 null', async () =>
   } finally {
     c.kill();
   }
+});
+// ---- I9：R9 动态跳转规则 ----
+
+test('I9：规则命中 → 302 到规则的 longUrl', async () => {
+  state.rules = [{ short_url_id: 1, rules: [{ longUrl: 'https://target.example/rule', priority: 1, conditions: [{ type: 'query-param', matchKey: 'src', matchValue: 'wechat' }] }] }];
+  state.rulesSeq = 2;
+  // 等规则缓存轮询到新 seq
+  await new Promise((r) => setTimeout(r, 300));
+  const res = await req('/known1?src=wechat');
+  assert.equal(res.status, 302);
+  // 命中的规则目标同样受 forward_query 影响（shlink 口径：query 拼在最终目标上）
+  assert.equal(res.headers.location, 'https://target.example/rule?src=wechat');
+});
+
+test('I9：规则不命中 → 302 到默认 longUrl', async () => {
+  state.rules = [{ short_url_id: 1, rules: [{ longUrl: 'https://target.example/rule', priority: 1, conditions: [{ type: 'query-param', matchKey: 'src', matchValue: 'wechat' }] }] }];
+  state.rulesSeq = 3;
+  await new Promise((r) => setTimeout(r, 300));
+  const res = await req('/known1?src=other');
+  assert.equal(res.status, 302);
+  // forward_query 为 true，默认长链同样要带上 query（与命中规则时一致）
+  assert.equal(res.headers.location, 'https://target.example/ok?src=other');
+});
+
+test('I9：规则 + forward_query → query 拼在规则目标上', async () => {
+  state.rules = [{ short_url_id: 1, rules: [{ longUrl: 'https://target.example/rule', priority: 1, conditions: [{ type: 'any-value-query-param', matchKey: 'src' }] }] }];
+  state.rulesSeq = 4;
+  await new Promise((r) => setTimeout(r, 300));
+  const res = await req('/known1?src=wechat');
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.location, 'https://target.example/rule?src=wechat');
+});
+
+test('I9：像素路由不套用规则', async () => {
+  state.rules = [{ short_url_id: 1, rules: [{ longUrl: 'https://target.example/rule', priority: 1, conditions: [{ type: 'any-value-query-param', matchKey: 'src' }] }] }];
+  state.rulesSeq = 5;
+  await new Promise((r) => setTimeout(r, 300));
+  const res = await req('/known1/track');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['content-type'], 'image/gif');
+});
+
+test('I9：无规则的短链 → 走默认 longUrl，开销不变', async () => {
+  state.rules = [];
+  state.rulesSeq = 6;
+  await new Promise((r) => setTimeout(r, 300));
+  const res = await req('/known1');
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.location, 'https://target.example/ok');
+});
+
+test('I9：规则保存不触发主快照重拉（两个 seq 独立）', async () => {
+  // 主快照走 link_seq，规则走 rules_seq —— 两个端点不同，规则写入不会让主快照重拉。
+  // 权威断言在 SQL 层（link_version 不变、rules_seq 变），这里只验端点契约：
+  // rules_seq 必须直接返回一个裸数字，rules-cache.js 按 number 解析。
+  const res = await fetch(`http://127.0.0.1:${mock.address().port}/rest/v1/rpc/rules_seq`);
+  assert.equal(res.status, 200);
+  const value = await res.json();
+  assert.equal(typeof value, 'number');
+  assert.equal(value, state.rulesSeq);
+});
+
+test('I9：geo 省名条件命中 → 跳规则目标（需本地已构建 china-geo.bin）', async (t) => {
+  const bin = path.join(__dirname, '..', 'china-geo.bin');
+  if (!fs.existsSync(bin)) return t.skip('china-geo.bin 未构建（scripts/build-china-geo.mjs）');
+  state.rules = [{ short_url_id: 1, rules: [{ longUrl: 'https://target.example/rule', priority: 1, conditions: [{ type: 'geolocation-city-name', matchValue: '广东' }] }] }];
+  state.rulesSeq = 7;
+  await new Promise((r) => setTimeout(r, 300));
+  // 120.235.196.208 落广东（构建脚本对拍过的样本）
+  const res = await req('/known1', HOST, { 'x-forwarded-for': '120.235.196.208' });
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.location, 'https://target.example/rule');
+});
+
+test('I9：geo 省名条件不命中（境外 IP）→ 默认长链', async (t) => {
+  const bin = path.join(__dirname, '..', 'china-geo.bin');
+  if (!fs.existsSync(bin)) return t.skip('china-geo.bin 未构建（scripts/build-china-geo.mjs）');
+  state.rules = [{ short_url_id: 1, rules: [{ longUrl: 'https://target.example/rule', priority: 1, conditions: [{ type: 'geolocation-city-name', matchValue: '广东' }] }] }];
+  state.rulesSeq = 8;
+  await new Promise((r) => setTimeout(r, 300));
+  const res = await req('/known1', HOST, { 'x-forwarded-for': '8.8.8.8' });
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.location, 'https://target.example/ok');
 });
