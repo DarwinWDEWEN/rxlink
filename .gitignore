@@ -7,6 +7,8 @@ web/dist/
 dist/
 # 地理富化的 mmdb bundle：构建产物（~50MB），用 scripts/build-geoip-bundle.mjs 重建
 fc/geo-enrich/geoip/
+# 跳转规则的中国省级 IP 表：构建产物（~200KB），用 scripts/build-china-geo.mjs 重建
+fc/redirect/china-geo.bin
 *.local
 .DS_Store
 codegraph.db
