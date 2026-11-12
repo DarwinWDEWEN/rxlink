@@ -7,7 +7,7 @@
 const SUPABASE_URL = (Deno.env.get('SUPABASE_URL') ?? Deno.env.get('SUPABASE_API_URL') ?? '')
   .replace(/\/+$/, '');
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const VERSION = '4.0.0';
+const VERSION = '5.1.0';
 
 type Json = Record<string, unknown>;
 
@@ -151,10 +151,114 @@ function parseOrder(raw: string | null): { field: string; dir: string } {
   return { field: raw.slice(0, i), dir: raw.slice(i + 1) };
 }
 
+// ---- I9：R9 动态跳转规则校验（对齐 shlink RedirectConditionType::isValid）----
+const CONDITION_TYPES = [
+  'device', 'language', 'query-param', 'any-value-query-param', 'valueless-query-param',
+  'ip-address', 'geolocation-country-code', 'geolocation-city-name',
+  'before-date', 'after-date', 'browser',
+] as const;
+
+const DEVICE_VALUES = ['android', 'ios', 'mobile', 'windows', 'macos', 'linux', 'chromeos', 'desktop'];
+const BROWSER_VALUES = ['chrome', 'firefox', 'edge', 'safari', 'opera', 'android_browser'];
+
+function invalidCondition(value: string, type: string): ApiError {
+  return new ApiError(
+    400,
+    'invalid-data',
+    `"${value}" is not a valid value for the "${type.toUpperCase()}" redirect condition`,
+  );
+}
+
+// IPv4 / IPv6 静态地址、CIDR、通配符 —— 与跳转侧 ipmat.js 同一口径
+function isValidIpPattern(value: string): boolean {
+  const s = value.trim();
+  if (!s) return false;
+  if (s.includes('*')) {
+    // 通配符只允许 IPv4 的四段形式
+    const parts = s.split('.');
+    return parts.length === 4 && parts.every((p) => p === '*' || (/^\d{1,3}$/.test(p) && Number(p) <= 255));
+  }
+  const slash = s.indexOf('/');
+  const base = slash < 0 ? s : s.slice(0, slash);
+  const len = slash < 0 ? null : s.slice(slash + 1);
+  const isV4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(base) && base.split('.').every((p) => Number(p) <= 255);
+  const isV6 = /^[0-9a-fA-F:]+$/.test(base) && base.includes(':');
+  if (!isV4 && !isV6) return false;
+  if (len !== null) {
+    const n = Number(len);
+    const max = isV4 ? 32 : 128;
+    if (!Number.isInteger(n) || n < 0 || n > max) return false;
+  }
+  return true;
+}
+
+function validateCondition(cond: unknown): void {
+  if (typeof cond !== 'object' || cond === null) {
+    throw new ApiError(400, 'invalid-data', 'Each redirect condition must be an object');
+  }
+  const c = cond as { type?: unknown; matchKey?: unknown; matchValue?: unknown };
+  const type = typeof c.type === 'string' ? c.type : '';
+  if (!CONDITION_TYPES.includes(type as (typeof CONDITION_TYPES)[number])) {
+    throw new ApiError(400, 'invalid-data', `"${type}" is not a valid redirect condition type`);
+  }
+  const value = c.matchValue === undefined || c.matchValue === null ? '' : String(c.matchValue);
+  switch (type) {
+    case 'device':
+      if (!DEVICE_VALUES.includes(value)) throw invalidCondition(value, type);
+      break;
+    case 'browser':
+      if (!BROWSER_VALUES.includes(value)) throw invalidCondition(value, type);
+      break;
+    case 'ip-address':
+      if (!isValidIpPattern(value)) throw invalidCondition(value, type);
+      break;
+    case 'geolocation-country-code':
+      if (!/^[A-Za-z]{2}$/.test(value)) throw invalidCondition(value, type);
+      break;
+    case 'query-param':
+      if (value === '') throw invalidCondition(value, type);
+      break;
+    default:
+      // 其余类型 shlink 也不校验值
+      break;
+  }
+}
+
+function validateRules(body: unknown): Array<Record<string, unknown>> {
+  if (typeof body !== 'object' || body === null) {
+    throw new ApiError(400, 'invalid-data', 'Request body must be an object');
+  }
+  const rules = (body as { redirectRules?: unknown }).redirectRules;
+  if (rules === undefined || rules === null) {
+    throw new ApiError(400, 'invalid-data', 'redirectRules is required');
+  }
+  if (!Array.isArray(rules)) {
+    throw new ApiError(400, 'invalid-data', 'redirectRules must be an array');
+  }
+  for (const rule of rules) {
+    if (typeof rule !== 'object' || rule === null) {
+      throw new ApiError(400, 'invalid-data', 'Each redirect rule must be an object');
+    }
+    const r = rule as { longUrl?: unknown; conditions?: unknown };
+    if (typeof r.longUrl !== 'string' || r.longUrl.trim() === '') {
+      throw new ApiError(400, 'invalid-data', 'longUrl is required for each redirect rule');
+    }
+    if (r.conditions === undefined || r.conditions === null) {
+      throw new ApiError(400, 'invalid-data', 'conditions is required for each redirect rule');
+    }
+    if (!Array.isArray(r.conditions)) {
+      throw new ApiError(400, 'invalid-data', 'conditions must be an array');
+    }
+    for (const cond of r.conditions) validateCondition(cond);
+  }
+  return rules as Array<Record<string, unknown>>;
+}
+
 async function listShortUrls(url: URL): Promise<Json> {
   const q = url.searchParams;
   const order = parseOrder(q.get('orderBy'));
   const tags = [...q.getAll('tags[]'), ...q.getAll('tags')].filter((t) => t !== '');
+  const excludedTags = [...q.getAll('excludeTags[]'), ...q.getAll('excludeTags')].filter((t) => t !== '');
   const result = await rpc('list_short_urls', {
     p_page: int(q.get('page'), 1),
     p_items: int(q.get('itemsPerPage'), 20),
@@ -168,6 +272,8 @@ async function listShortUrls(url: URL): Promise<Json> {
     p_exclude_expired: bool(q.get('excludePastValidUntil')),
     p_start: str(q.get('startDate')),
     p_end: str(q.get('endDate')),
+    p_excluded_tags: excludedTags.length ? excludedTags : null,
+    p_excluded_tags_mode: str(q.get('excludeTagsMode')) ?? 'all',
   });
   // SDK 解包的是 { shortUrls: { data, pagination } }，不是 data 本身
   return { shortUrls: result };
@@ -452,8 +558,16 @@ export async function handleRequest(req: Request): Promise<Response> {
       if (req.method === 'GET') {
         return json(await rpc('get_short_url_redirect_rules', { p_code: code, p_domain: domain }), 200, origin);
       }
-      if (req.method === 'POST') {
-        throw new ApiError(501, 'not-implemented', 'Redirect rules are not supported until M3');
+      if (req.method === 'POST' || req.method === 'PATCH') {
+        // body 解析沿用本文件既有写法（req.json().catch(() => ({}))）
+        const body = (await req.json().catch(() => ({}))) as Json;
+        const rules = validateRules(body);
+        const result = await rpc('set_short_url_redirect_rules', {
+          p_code: code,
+          p_domain: domain,
+          p_rules: rules,
+        });
+        return json(result, 200, origin);
       }
       throw new ApiError(405, 'not-found', `Method ${req.method} not allowed`);
     }

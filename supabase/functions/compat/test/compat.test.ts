@@ -65,7 +65,7 @@ Deno.test('health 免鉴权返回 pass', async () => {
   const res = await req('/health');
   assertEquals(res.status, 200);
   const body = await bodyJson(res);
-  assertEquals(body, { status: 'pass', version: '4.0.0' });
+  assertEquals(body, { status: 'pass', version: '5.1.0' });
   assertEquals(calls.length, 0); // 连通性闸门不打 RPC
 });
 
@@ -247,4 +247,229 @@ Deno.test('既有：POST /short-urls 带 author key id', async () => {
   const call = calls.find((c) => c.fn === 'create_short_url');
   assertEquals(call?.body.p_custom_slug, 'posted');
   assertEquals(call?.body.p_author_api_key_id, 7);
+});
+
+// ---- I9：R9 动态跳转规则 ----
+
+function ruleBody(rules: unknown) {
+  return JSON.stringify({ redirectRules: rules });
+}
+
+Deno.test('I9：version 旋钮提到 5.1.0', async () => {
+  reset();
+  const res = await req('/health');
+  const body = await bodyJson(res);
+  assertEquals(body.version, '5.1.0');
+});
+
+Deno.test('I9：GET redirect-rules 透传 RPC 结果', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'get_short_url_redirect_rules') {
+      return {
+        ok: true,
+        body: {
+          defaultLongUrl: 'https://example.com/default',
+          redirectRules: [
+            { longUrl: 'https://example.com/m', priority: 1, conditions: [{ type: 'device', matchKey: null, matchValue: 'mobile' }] },
+          ],
+        },
+      };
+    }
+    return { ok: true, body: null };
+  });
+  const res = await req('/short-urls/abc/redirect-rules', { headers: AUTH });
+  assertEquals(res.status, 200);
+  const body = await bodyJson(res);
+  assertEquals(body.defaultLongUrl, 'https://example.com/default');
+  assertEquals((body.redirectRules as unknown[]).length, 1);
+  const call = calls.find((c) => c.fn === 'get_short_url_redirect_rules');
+  assertEquals(call?.body.p_code, 'abc');
+});
+
+Deno.test('I9：POST redirect-rules 调 set RPC 并返回结果', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'set_short_url_redirect_rules') {
+      return {
+        ok: true,
+        body: {
+          defaultLongUrl: 'https://example.com/default',
+          redirectRules: [
+            { longUrl: 'https://example.com/m', priority: 1, conditions: [{ type: 'device', matchKey: null, matchValue: 'mobile' }] },
+          ],
+        },
+      };
+    }
+    return { ok: true, body: null };
+  });
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([{ longUrl: 'https://example.com/m', conditions: [{ type: 'device', matchValue: 'mobile' }] }]),
+  });
+  assertEquals(res.status, 200);
+  const call = calls.find((c) => c.fn === 'set_short_url_redirect_rules');
+  assertEquals(call?.body.p_code, 'abc');
+  const rules = (call?.body.p_rules as Array<{ longUrl: string; conditions: unknown[] }>);
+  assertEquals(rules.length, 1);
+  assertEquals(rules[0].longUrl, 'https://example.com/m');
+});
+
+Deno.test('I9：PATCH 也支持', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'set_short_url_redirect_rules') return { ok: true, body: { defaultLongUrl: 'https://x', redirectRules: [] } };
+    return { ok: true, body: null };
+  });
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'PATCH',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([]),
+  });
+  assertEquals(res.status, 200);
+  assert(calls.some((c) => c.fn === 'set_short_url_redirect_rules'));
+});
+
+Deno.test('I9：device 非法值 → 400 invalid-data', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([{ longUrl: 'https://x', conditions: [{ type: 'device', matchValue: 'desktop2' }] }]),
+  });
+  assertEquals(res.status, 400);
+  const body = await bodyJson(res);
+  assertEquals(body.type, 'https://shlink.io/api/error/invalid-data');
+  assert(String(body.detail).includes('desktop2'));
+});
+
+Deno.test('I9：browser 非法值 → 400', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([{ longUrl: 'https://x', conditions: [{ type: 'browser', matchValue: 'ie' }] }]),
+  });
+  assertEquals(res.status, 400);
+});
+
+Deno.test('I9：ip-address 非法值 → 400', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([{ longUrl: 'https://x', conditions: [{ type: 'ip-address', matchValue: '999.1.1.1' }] }]),
+  });
+  assertEquals(res.status, 400);
+});
+
+Deno.test('I9：geolocation-country-code 非两字母 → 400', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([{ longUrl: 'https://x', conditions: [{ type: 'geolocation-country-code', matchValue: 'CHN' }] }]),
+  });
+  assertEquals(res.status, 400);
+});
+
+Deno.test('I9：query-param 空 matchValue → 400', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([{ longUrl: 'https://x', conditions: [{ type: 'query-param', matchKey: 'k', matchValue: '' }] }]),
+  });
+  assertEquals(res.status, 400);
+});
+
+Deno.test('I9：未知 type → 400', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([{ longUrl: 'https://x', conditions: [{ type: 'nope', matchValue: 'v' }] }]),
+  });
+  assertEquals(res.status, 400);
+});
+
+Deno.test('I9：缺 longUrl → 400', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([{ conditions: [] }]),
+  });
+  assertEquals(res.status, 400);
+});
+
+Deno.test('I9：11 种合法 type 全部放行', async () => {
+  const cases: Array<[string, string | null, string | null]> = [
+    ['device', null, 'mobile'],
+    ['browser', null, 'chrome'],
+    ['language', null, 'zh-CN'],
+    ['query-param', 'src', 'wechat'],
+    ['any-value-query-param', 'src', null],
+    ['valueless-query-param', 'src', null],
+    ['ip-address', null, '192.168.0.0/16'],
+    ['geolocation-country-code', null, 'CN'],
+    ['geolocation-city-name', null, 'Guangdong'],
+    ['before-date', null, '2027-01-01T00:00:00Z'],
+    ['after-date', null, '2020-01-01T00:00:00Z'],
+  ];
+  for (const [type, matchKey, matchValue] of cases) {
+    reset((fn) => {
+      if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+      if (fn === 'set_short_url_redirect_rules') return { ok: true, body: { defaultLongUrl: 'https://x', redirectRules: [] } };
+      return { ok: true, body: null };
+    });
+    const cond: Record<string, unknown> = { type };
+    if (matchKey !== null) cond.matchKey = matchKey;
+    if (matchValue !== null) cond.matchValue = matchValue;
+    const res = await req('/short-urls/abc/redirect-rules', {
+      method: 'POST',
+      headers: { ...AUTH, 'Content-Type': 'application/json' },
+      body: ruleBody([{ longUrl: 'https://x', conditions: [cond] }]),
+    });
+    assertEquals(res.status, 200, `type=${type} 应该放行`);
+  }
+});
+
+Deno.test('I9：空 redirectRules 数组合法（清空规则）', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'set_short_url_redirect_rules') return { ok: true, body: { defaultLongUrl: 'https://x', redirectRules: [] } };
+    return { ok: true, body: null };
+  });
+  const res = await req('/short-urls/abc/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([]),
+  });
+  assertEquals(res.status, 200);
+});
+
+Deno.test('I9：短链不存在 → 404 short-url-not-found', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'set_short_url_redirect_rules') return { ok: false, status: 404, code: 'P0002', message: 'short_url_not_found' };
+    return { ok: true, body: null };
+  });
+  const res = await req('/short-urls/nope/redirect-rules', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: ruleBody([]),
+  });
+  assertEquals(res.status, 404);
+  const body = await bodyJson(res);
+  assertEquals(body.type, 'https://shlink.io/api/error/short-url-not-found');
+});
+
+Deno.test('I9：excludeTags 传给 list_short_urls', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  await req('/short-urls?excludeTags%5B%5D=alpha&excludeTags%5B%5D=beta&excludeTagsMode=any', { headers: AUTH });
+  const call = calls.find((c) => c.fn === 'list_short_urls');
+  assertEquals(call?.body.p_excluded_tags, ['alpha', 'beta']);
+  assertEquals(call?.body.p_excluded_tags_mode, 'any');
 });
