@@ -1384,6 +1384,13 @@ as $$
 $$;
 
 -- 覆盖 0005 的同名函数：返回值加 rules 列（回落路径用；快照通道不靠它）
+--
+-- ⚠️ 必须先 DROP：Postgres 的 CREATE OR REPLACE **不允许改返回类型**
+--    （改了报 42P13 cannot change return type of existing function）。
+--    resolve_short 的 OUT 列从 3 个变成 4 个（多了 rules），属于改返回类型。
+--    旧签名：resolve_short(text, text)
+drop function if exists resolve_short(text, text);
+
 create or replace function resolve_short(p_code text, p_domain text default null)
 returns table (short_url_id bigint, long_url text, forward_query boolean, rules jsonb)
 language plpgsql
@@ -1549,7 +1556,12 @@ for f in out_dir.glob('stmt-*.sql'):
     f.unlink()
 stmts = split_statements(src)
 for i, s in enumerate(stmts, 1):
-    (out_dir / f'stmt-{i:03d}.sql').write_text(s if s.endswith(';') else s + ';\n')
+    # 去掉开头的注释行：supabase db query 会把以 `--` 开头的参数当成 CLI 选项
+    lines = s.splitlines()
+    while lines and (not lines[0].strip() or lines[0].strip().startswith('--')):
+        lines.pop(0)
+    body = '\n'.join(lines).strip()
+    (out_dir / f'stmt-{i:03d}.sql').write_text((body if body.endswith(';') else body + ';') + '\n')
 print('statements:', len(stmts))
 PY
 python3 /tmp/rxl-split-sql.py "$PWD/supabase/migrations/0018_redirect_rules.sql" /tmp/rxlink-split/stmts18
@@ -1570,11 +1582,17 @@ Expected：`stmt-001.sql` 以 `create table` 开头；`revoke` / `grant` 各自�
 ```bash
 for f in /tmp/rxlink-split/stmts18/stmt-*.sql; do
   echo "--- $f"
-  supabase db query --db-url "$SUPABASE_DB_URL" "$(cat "$f")" || break
+  supabase db query --db-url "$SUPABASE_DB_URL" "$(cat "$f")"
+  rc=$?
+  if [ $rc -ne 0 ]; then echo "❌ 失败于 $(basename "$f")（退出码 $rc）"; break; fi
 done
 ```
 
 Expected: 全部成功，无报错。
+
+> **必须用退出码判定失败，不要 grep 输出文本**：supabase CLI 的报错文案有两种格式 ——
+> `failed to execute query: ERROR: ...` 和 `query error: ERROR: ...`。
+> 只 grep 前者会漏掉后者（本次实施就因此漏掉了一条 42P13）。退出码两种情况都是非 0。
 
 ### Step 4: 断言
 
@@ -1847,7 +1865,9 @@ set -a; source supabase/functions/.env; set +a
 python3 /tmp/rxl-split-sql.py "$PWD/supabase/migrations/0019_list_exclude_tags.sql" /tmp/rxlink-split/stmts19
 for f in /tmp/rxlink-split/stmts19/stmt-*.sql; do
   echo "--- $f"
-  supabase db query --db-url "$SUPABASE_DB_URL" "$(cat "$f")" || break
+  supabase db query --db-url "$SUPABASE_DB_URL" "$(cat "$f")"
+  rc=$?
+  if [ $rc -ne 0 ]; then echo "❌ 失败于 $(basename "$f")（退出码 $rc）"; break; fi
 done
 ```
 
