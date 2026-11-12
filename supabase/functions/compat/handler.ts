@@ -4,10 +4,16 @@
 // 契约细节见 docs/shlink-api-contract.md：
 //   只认 /rest/v3；鉴权只有 X-Api-Key（哈希后查 api_key）；错误体 RFC7807。
 // I8 扩展：R4 GET /short-urls/shorten、R7 GET /visits/export（rxlink 扩展端点）。
+// I10 扩展：标题自动解析（未填标题时抓目标页 <title>）。
+import { resolveTitle, type TitleResolverDeps } from './title-resolver.ts';
+
 const SUPABASE_URL = (Deno.env.get('SUPABASE_URL') ?? Deno.env.get('SUPABASE_API_URL') ?? '')
   .replace(/\/+$/, '');
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const VERSION = '5.1.0';
+
+// R10：测试可注入假的 fetch / DNS 解析器；生产留空（走默认实现）
+export const titleResolverDeps: TitleResolverDeps = {};
 
 type Json = Record<string, unknown>;
 
@@ -133,6 +139,23 @@ async function authenticate(apiKey: string | null): Promise<{ id: number }> {
 
 function str(v: unknown): string | null {
   return typeof v === 'string' && v !== '' ? v : null;
+}
+
+// R10：环境变量 AUTO_RESOLVE_TITLES 关闭自动解析；未设置 = 开启
+function autoResolveTitlesEnabled(): boolean {
+  const raw = Deno.env.get('AUTO_RESOLVE_TITLES');
+  if (raw === undefined) return true;
+  const v = raw.trim().toLowerCase();
+  return !['false', '0', 'off', 'no'].includes(v);
+}
+
+// R10：抓取失败只记「原因码 + host」，绝不记完整 URL（长链 query 可能带 token）
+function logTitleResolve(message: string): void {
+  if (titleResolverDeps.log) {
+    titleResolverDeps.log(message);
+    return;
+  }
+  console.log(message);
 }
 
 function bool(v: string | null): boolean {
@@ -305,12 +328,27 @@ async function listShortUrls(url: URL): Promise<Json> {
 async function createShortUrl(body: Json, keyId: number): Promise<Json> {
   const longUrl = str(body.longUrl);
   if (!longUrl) throw new ApiError(400, 'invalid-data', 'longUrl is required');
+
+  // R10：上游 ShortUrlCreation::hasTitle() = title !== null
+  //      → 未提供标题才抓；抓到的标题标成「自动解析」
+  const userProvidedTitle = body.title !== undefined && body.title !== null;
+  let title = userProvidedTitle ? str(body.title) : null;
+  let titleWasAutoResolved = false;
+  if (!userProvidedTitle && autoResolveTitlesEnabled()) {
+    const resolved = await resolveTitle(longUrl, { ...titleResolverDeps, log: logTitleResolve });
+    if (resolved) {
+      title = resolved;
+      titleWasAutoResolved = true;
+    }
+  }
+
   try {
     return (await rpc('create_short_url', {
       p_long_url: longUrl,
       p_domain: str(body.domain),
       p_custom_slug: str(body.customSlug),
-      p_title: str(body.title),
+      p_title: title,
+      p_title_was_auto_resolved: titleWasAutoResolved,
       p_tags: Array.isArray(body.tags) ? body.tags : null,
       p_crawlable: body.crawlable === true,
       p_forward_query: body.forwardQuery !== false,
@@ -337,7 +375,24 @@ async function getShortUrl(code: string, domain: string | null): Promise<Json> {
 }
 
 async function updateShortUrl(code: string, domain: string | null, body: Json): Promise<Json> {
-  return (await rpc('update_short_url', { p_code: code, p_domain: domain, p_patch: body })) as Json;
+  // R10：上游 ShortUrlService 只在 longUrl !== null 时才触发标题解析；
+  //      用户显式给了 title 就不抓（手填优先）。
+  //      抓到的自动标题走独立参数 p_auto_title，绝不能塞进 p_patch
+  //      —— p_patch 里有 title 键即代表「用户手填」，两者必须可区分。
+  const patch: Json = { ...body };
+  const userProvidedTitle = 'title' in patch;
+  const longUrl = typeof patch.longUrl === 'string' ? patch.longUrl : null;
+  let autoTitle: string | null = null;
+  if (!userProvidedTitle && longUrl && autoResolveTitlesEnabled()) {
+    const resolved = await resolveTitle(longUrl, { ...titleResolverDeps, log: logTitleResolve });
+    if (resolved) autoTitle = resolved;
+  }
+  return (await rpc('update_short_url', {
+    p_code: code,
+    p_domain: domain,
+    p_patch: patch,
+    p_auto_title: autoTitle,
+  })) as Json;
 }
 
 async function deleteShortUrl(code: string, domain: string | null): Promise<void> {

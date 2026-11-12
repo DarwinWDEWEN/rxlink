@@ -15,8 +15,14 @@ type RpcCall = { fn: string; body: Record<string, unknown> };
 const calls: RpcCall[] = [];
 let rpcImpl: (fn: string, body: Record<string, unknown>) => RpcReply = () => ({ ok: true, body: null });
 
+// 外部（非 /rpc/）请求的桩：R10 的标题抓取会走这里
+let externalImpl: (url: string, init?: RequestInit) => Promise<Response> =
+  () => Promise.reject(new Error('unexpected external request'));
+
 globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  // R10：按 URL 分流，抓取请求不能被 RPC mock 吞掉
+  if (!url.includes('/rpc/')) return externalImpl(url, init);
   const fn = url.slice(url.lastIndexOf('/rpc/') + '/rpc/'.length);
   const body = init?.body ? JSON.parse(String(init.body)) : {};
   calls.push({ fn, body });
@@ -30,7 +36,7 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
   );
 }) as typeof fetch;
 
-const { handleRequest } = await import('../handler.ts');
+const { handleRequest, titleResolverDeps } = await import('../handler.ts');
 
 const KEY = 'rxl_test_key';
 const AUTH = { 'X-Api-Key': KEY };
@@ -56,6 +62,9 @@ function assertEquals<T>(actual: T, expected: T, msg?: string): void {
 // 每个测试前清空调用记录；默认 compat_auth 放行、其余 RPC 返回 null
 function reset(impl?: (fn: string, body: Record<string, unknown>) => RpcReply) {
   calls.length = 0;
+  // R10：默认关掉自动解析，既有用例不受影响；R10 用例自己打开
+  Deno.env.set('AUTO_RESOLVE_TITLES', 'false');
+  externalImpl = () => Promise.reject(new Error('unexpected external request'));
   rpcImpl = impl ??
     ((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
 }
@@ -512,4 +521,216 @@ Deno.test('I9：畸形百分号编码不报 500（走正常的查不到分支）
     const res = await req(path, { headers: AUTH });
     assert(res.status !== 500, `${path} 不该是 500，实际 ${res.status}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// R10：标题自动解析
+// ---------------------------------------------------------------------------
+
+function htmlResponse(body: string, headers: Record<string, string> = {}): Response {
+  return new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8', ...headers },
+  });
+}
+
+// 把抓取依赖换掉：假 DNS + 假 fetch，绝不碰真网
+function setupTitleFetch(body: string, addresses: string[] = ['93.184.216.34']) {
+  titleResolverDeps.resolveDns = async () => addresses;
+  externalImpl = async () => htmlResponse(body);
+}
+
+function createCall() {
+  return calls.find((c) => c.fn === 'create_short_url');
+}
+
+function updateCall() {
+  return calls.find((c) => c.fn === 'update_short_url');
+}
+
+Deno.test('R10：默认（未设环境变量）→ 建链不带 title 时抓标题并标自动解析', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'create_short_url') return { ok: true, body: { shortCode: 'abc12' } };
+    return { ok: true, body: null };
+  });
+  Deno.env.delete('AUTO_RESOLVE_TITLES'); // 未设置 = 默认开
+  setupTitleFetch('<html><head><title>Fetched Title</title></head></html>');
+
+  const res = await req('/short-urls', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ longUrl: 'https://example.com/x' }),
+  });
+
+  assertEquals(res.status, 200);
+  assertEquals(createCall()?.body.p_title, 'Fetched Title');
+  assertEquals(createCall()?.body.p_title_was_auto_resolved, true);
+});
+
+Deno.test('R10：建链带 title → 不抓，来源 false', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'create_short_url') return { ok: true, body: { shortCode: 'abc12' } };
+    return { ok: true, body: null };
+  });
+  Deno.env.delete('AUTO_RESOLVE_TITLES');
+  setupTitleFetch('<title>Should Not Be Used</title>');
+
+  const res = await req('/short-urls', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ longUrl: 'https://example.com/x', title: 'Manual Title' }),
+  });
+
+  assertEquals(res.status, 200);
+  assertEquals(createCall()?.body.p_title, 'Manual Title');
+  assertEquals(createCall()?.body.p_title_was_auto_resolved, false);
+});
+
+Deno.test('R10：建链抓不到 → title 为空、来源 false、建链仍成功', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'create_short_url') return { ok: true, body: { shortCode: 'abc12' } };
+    return { ok: true, body: null };
+  });
+  Deno.env.delete('AUTO_RESOLVE_TITLES');
+  externalImpl = async () => Promise.reject(new Error('network down'));
+
+  const res = await req('/short-urls', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ longUrl: 'https://example.com/x' }),
+  });
+
+  assertEquals(res.status, 200);
+  assertEquals(createCall()?.body.p_title, null);
+  assertEquals(createCall()?.body.p_title_was_auto_resolved, false);
+});
+
+Deno.test('R10：AUTO_RESOLVE_TITLES=false → 完全不抓', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'create_short_url') return { ok: true, body: { shortCode: 'abc12' } };
+    return { ok: true, body: null };
+  });
+  Deno.env.set('AUTO_RESOLVE_TITLES', 'false');
+  setupTitleFetch('<title>Should Not Be Used</title>');
+
+  const res = await req('/short-urls', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ longUrl: 'https://example.com/x' }),
+  });
+
+  assertEquals(res.status, 200);
+  assertEquals(createCall()?.body.p_title, null);
+  assertEquals(createCall()?.body.p_title_was_auto_resolved, false);
+});
+
+Deno.test('R10：编辑带 title → 不抓，p_auto_title 为 null', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'update_short_url') return { ok: true, body: { shortCode: 'abc12' } };
+    return { ok: true, body: null };
+  });
+  Deno.env.delete('AUTO_RESOLVE_TITLES');
+  setupTitleFetch('<title>Should Not Be Used</title>');
+
+  const res = await req('/short-urls/abc12', {
+    method: 'PATCH',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ longUrl: 'https://example.com/y', title: 'Manual' }),
+  });
+
+  assertEquals(res.status, 200);
+  assertEquals(updateCall()?.body.p_auto_title, null);
+  assertEquals((updateCall()?.body.p_patch as Record<string, unknown>).title, 'Manual');
+});
+
+Deno.test('R10：编辑改 longUrl → 抓到的标题走 p_auto_title，且不进 patch', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'update_short_url') return { ok: true, body: { shortCode: 'abc12' } };
+    return { ok: true, body: null };
+  });
+  Deno.env.delete('AUTO_RESOLVE_TITLES');
+  setupTitleFetch('<title>Refreshed</title>');
+
+  const res = await req('/short-urls/abc12', {
+    method: 'PATCH',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ longUrl: 'https://example.com/y' }),
+  });
+
+  assertEquals(res.status, 200);
+  assertEquals(updateCall()?.body.p_auto_title, 'Refreshed');
+  const patch = updateCall()?.body.p_patch as Record<string, unknown>;
+  assertEquals(patch.title, undefined);
+});
+
+Deno.test('R10：编辑抓不到 → p_auto_title 为 null', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'update_short_url') return { ok: true, body: { shortCode: 'abc12' } };
+    return { ok: true, body: null };
+  });
+  Deno.env.delete('AUTO_RESOLVE_TITLES');
+  externalImpl = async () => Promise.reject(new Error('network down'));
+
+  const res = await req('/short-urls/abc12', {
+    method: 'PATCH',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ longUrl: 'https://example.com/y' }),
+  });
+
+  assertEquals(res.status, 200);
+  assertEquals(updateCall()?.body.p_auto_title, null);
+});
+
+Deno.test('R10：编辑既不改 longUrl 也不给 title → 不抓', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'update_short_url') return { ok: true, body: { shortCode: 'abc12' } };
+    return { ok: true, body: null };
+  });
+  Deno.env.delete('AUTO_RESOLVE_TITLES');
+  setupTitleFetch('<title>Should Not Be Used</title>');
+
+  const res = await req('/short-urls/abc12', {
+    method: 'PATCH',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ crawlable: true }),
+  });
+
+  assertEquals(res.status, 200);
+  assertEquals(updateCall()?.body.p_auto_title, null);
+});
+
+Deno.test('R10：抓取失败只记原因码 + host，不记完整 URL', async () => {
+  reset((fn) => {
+    if (fn === 'compat_auth') return { ok: true, body: { id: 7, name: 'test-key' } };
+    if (fn === 'create_short_url') return { ok: true, body: { shortCode: 'abc12' } };
+    return { ok: true, body: null };
+  });
+  Deno.env.delete('AUTO_RESOLVE_TITLES');
+  const logs: string[] = [];
+  titleResolverDeps.log = (m: string) => logs.push(m);
+  // 解析到内网 → 被 SSRF 拦截
+  titleResolverDeps.resolveDns = async () => ['10.0.0.5'];
+  externalImpl = async () => htmlResponse('<title>x</title>');
+
+  const res = await req('/short-urls', {
+    method: 'POST',
+    headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ longUrl: 'https://example.com/x?token=secret' }),
+  });
+
+  assertEquals(res.status, 200);
+  assertEquals(createCall()?.body.p_title, null);
+  assert(logs.length > 0, '应该记录了失败原因');
+  assert(logs[0]!.includes('code=blocked_address'), `原因码不对：${logs[0]}`);
+  assert(logs[0]!.includes('host=example.com'), `host 不对：${logs[0]}`);
+  // 关键：不能出现完整 URL（query 里可能有 token）
+  assert(!logs[0]!.includes('token=secret'), `日志里泄露了完整 URL：${logs[0]}`);
 });
