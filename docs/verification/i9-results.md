@@ -224,6 +224,12 @@
 
 **UI 端到端**：控制台「Without tags…」填 `i3` + `i4` → URL 变成 `?excludeTags=i3%2Ci4`（正是逗号形态）→ 带 tag i4 的 i4v 被正确排除，列表只剩 2b9yj。
 
+## 7d-1. 最终自审发现并修掉的健壮性问题
+
+**畸形百分号编码导致 500**：`/short-urls/%ZZ/redirect-rules` 这类路径里 `decodeURIComponent('%ZZ')` 抛 `URIError`，被最外层 catch 兜成 **500 Internal error**。这是既有 5 处路由解码的通病（`/short-urls/{code}`、`/visits`、`/tags`、`/domains`），本次新增的规则路由沿用了同样的写法。修法：加 `safeDecode()`，解不出来就按原样传下去，走正常的「查不到」分支。
+
+线上复验（修后）：`/short-urls/%ZZ/redirect-rules` / `/short-urls/%ZZ` / `/short-urls/%ZZ/visits` 全部 **400**（不再是 500）。
+
 ## 7d. 性能抽查
 
 规则求值的**进程内真实开销**（20 万次微基准，用线上真实的 `rules.js`）：
@@ -251,9 +257,9 @@
 | `fc/redirect/test/rules.test.js` | 20 | ✅ 全绿 |
 | `fc/redirect/test/china-geo.test.js` | 6 | ✅ 全绿 |
 | `fc/redirect/test/redirect.test.js` | 40 | ✅ 全绿 |
-| `supabase/functions/compat/test/compat.test.ts` | 34 | ✅ 全绿 |
+| `supabase/functions/compat/test/compat.test.ts` | 35 | ✅ 全绿 |
 | `deno check`（compat 入口/逻辑/测试） | — | ✅ 干净 |
-| **合计** | **108** | ✅ |
+| **合计** | **109** | ✅ |
 
 ## 9. 遗留与口径
 
@@ -264,3 +270,5 @@
 5. **规则生效有 ≤5s 延迟**（`RULES_POLL_MS`）。刚写完就 curl 可能拿到默认长链——这是设计，不是 bug。
 6. **`tags` 的多标签筛选缺陷是 I5 起的既有欠账**，本次（I9）在实现 `excludeTags` 时发现并一并修掉了（见 §7c）。修的是兼容层的参数解析，`list_short_urls` 的 SQL 侧没动。
 7. **`deno lint` 有一条既有告警**（`handler.ts:346` `deleteVisits` 缺 `await`），不是本次改动引入，未动。
+8. **`longUrl` 不校验 URL 格式**（只要求非空）。上游 shlink 用 `#[LooseUriConverter]` 校验，但 rxlink 的**短链创建**（`createShortUrl` / `shorten`）同样不校验——这是 rxlink 既有的全局口径，不是 I9 引入的偏差。要跟上游对齐应作为跨切面改动单独做，不在 I9 范围内动。
+9. **`CACHE_POLL_MS` / `RULES_POLL_MS` 没有下限保护**：设成 0 或负数会让 `setInterval` 变成紧凑循环（烧 CPU）。与 `cache.js` 同款写法，是既有模式；线上未设这两个变量（默认 5 秒），无实际风险。已记为**下一次 FC 发版**时一并加下限（本次不动 `fc/redirect/`，以保证线上包与源码逐字节一致——runbook §5.1 的前提）。

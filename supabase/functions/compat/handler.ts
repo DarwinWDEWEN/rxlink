@@ -169,7 +169,18 @@ function invalidCondition(value: string, type: string): ApiError {
   );
 }
 
-// IPv4 / IPv6 静态地址、CIDR、通配符 —— 与跳转侧 ipmat.js 同一口径
+// 路径段解码：畸形百分号编码（如 %ZZ）不能让 decodeURIComponent 抛 URIError
+// 变成 500 —— 解不出来就按原样传下去，让它走正常的「查不到」分支。
+function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+// IPv4 / IPv6 静态地址、CIDR、通配符 —— 粗筛明显非法的值。
+// 真正的判定在跳转侧 ipmat.js（IPv6 用 node:net 严格解析），这里只负责挡住垃圾输入。
 function isValidIpPattern(value: string): boolean {
   const s = value.trim();
   if (!s) return false;
@@ -565,7 +576,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     }
     const rulesMatch = /^\/short-urls\/([^/]+)\/redirect-rules$/.exec(path);
     if (rulesMatch) {
-      const code = decodeURIComponent(rulesMatch[1]);
+      const code = safeDecode(rulesMatch[1]);
       const domain = str(url.searchParams.get('domain'));
       if (req.method === 'GET') {
         return json(await rpc('get_short_url_redirect_rules', { p_code: code, p_domain: domain }), 200, origin);
@@ -615,7 +626,7 @@ export async function handleRequest(req: Request): Promise<Response> {
 
     const visitsMatch = /^\/short-urls\/([^/]+)\/visits$/.exec(path);
     if (visitsMatch) {
-      const code = decodeURIComponent(visitsMatch[1]);
+      const code = safeDecode(visitsMatch[1]);
       if (req.method === 'GET') {
         return json(await listVisits('short', code, url), 200, origin);
       }
@@ -630,18 +641,18 @@ export async function handleRequest(req: Request): Promise<Response> {
     const tagVisitsMatch = /^\/tags\/([^/]+)\/visits$/.exec(path);
     if (tagVisitsMatch) {
       if (req.method !== 'GET') throw new ApiError(405, 'not-found', `Method ${req.method} not allowed`);
-      return json(await listVisits('tag', decodeURIComponent(tagVisitsMatch[1]), url), 200, origin);
+      return json(await listVisits('tag', safeDecode(tagVisitsMatch[1]), url), 200, origin);
     }
 
     const domainVisitsMatch = /^\/domains\/([^/]+)\/visits$/.exec(path);
     if (domainVisitsMatch) {
       if (req.method !== 'GET') throw new ApiError(405, 'not-found', `Method ${req.method} not allowed`);
-      return json(await listVisits('domain', decodeURIComponent(domainVisitsMatch[1]), url), 200, origin);
+      return json(await listVisits('domain', safeDecode(domainVisitsMatch[1]), url), 200, origin);
     }
 
     const match = /^\/short-urls\/([^/]+)$/.exec(path);
     if (match) {
-      const code = decodeURIComponent(match[1]);
+      const code = safeDecode(match[1]);
       const domain = str(url.searchParams.get('domain'));
       if (req.method === 'GET') return json(await getShortUrl(code, domain), 200, origin);
       if (req.method === 'PATCH') {

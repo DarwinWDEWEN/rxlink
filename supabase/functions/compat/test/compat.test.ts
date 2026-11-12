@@ -505,3 +505,11 @@ Deno.test('I9：显式传的 tagsMode=all 仍然生效', async () => {
   assertEquals(call?.body.p_tags_mode, 'all');
   assertEquals(call?.body.p_excluded_tags_mode, 'all');
 });
+
+Deno.test('I9：畸形百分号编码不报 500（走正常的查不到分支）', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  for (const path of ['/short-urls/%ZZ/redirect-rules', '/short-urls/%ZZ', '/short-urls/%ZZ/visits']) {
+    const res = await req(path, { headers: AUTH });
+    assert(res.status !== 500, `${path} 不该是 500，实际 ${res.status}`);
+  }
+});

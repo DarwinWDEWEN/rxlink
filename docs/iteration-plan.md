@@ -441,7 +441,7 @@
 - [x] 「排除标签」筛选器出现且生效：控制台填 `i3`+`i4` → URL `?excludeTags=i3%2Ci4` → 带 tag i4 的短链被正确排除
 - [x] **发现并修复缺陷**：多标签筛选被逗号串打哑（`tags`/`excludeTags` 没拆逗号；上游用 `splitByComma()`）。修复后 8 项线上断言全通过；`tagsMode`/`excludeTagsMode` 缺省对齐上游 `TagsMode::ANY`
 - [x] 性能抽查：规则求值进程内开销 **0.980 µs/次**；网络层 ABBA 交错对照差异测不出（p50/mean 反而「有规则」更快）
-- [x] 最终回归：ipmat 8 + rules 20 + china-geo 6 + redirect 40 + compat 34 = **108 例全绿**；`deno check` 干净；线上 robots 200 / 404 / pixel 200 / 302 全旧行为不变
+- [x] 最终回归：ipmat 8 + rules 20 + china-geo 6 + redirect 40 + compat 35 = **109 例全绿**；`deno check` 干净；线上 robots 200 / 404 / pixel 200 / 302 全旧行为不变
 - [x] 测试数据清理：规则 0 条、条件 0 条、临时 key 已删、短链启用状态已还原（库恢复 2 key / 1 启用短链）
 - [x] 验收归档：`docs/verification/i9-results.md`
 
@@ -462,7 +462,7 @@
 | I6 | 生产硬化 | **已验收** | I5 | B6 全勾 | 2026-11-10 当日 | 探针退场/prune 转真/压测(p95 416ms)/可观测/runbook/HTTPS 复测全通（B6 6/6；cdndev 放弃），见 `docs/verification/i6-results.md` |
 | I7 | 地理富化（#41–#44） | **进行中（主体已上线）** | I6 | B7 全勾 | 2026-11-10 → 2026-11-11 | #41 迁移 0012 + #42 跳转/drain 带 remote_addr + #43 富化函数 + #44 契约与兜底**全部上线**；换源 DB-IP；`0013` 修回写失配；mmdb 随 Layer 分发 + 触发改每小时；`0014` 收紧入队侧 IP 留存（线上 inbox 持 IP 291→0）；FC 富化函数手动跑通 275/275；真实流量端到端探针闭环；DB-IP 署名代码完成（7 单测）；**剩他两个动作**：重传 `console.zip`、确认触发器 cron 是 6 字段 |
 | I8 | M2 收尾批次（R1–R8） | **已验收** | I7 | B8 全勾 | 2026-11-11 当日 | 迁移 0015–0017 + 跳转 R1/R2/R3/R8 + 兼容层 R4/R6/R7 + cron R5 全上线；compat 改单文件构建包；见 `docs/verification/i8-results.md` |
-| I9 | R9 动态跳转规则 | **已验收** | I8 | B9 全勾 | 2026-11-12 当日 | 迁移 0018/0019 + 兼容层 version 5.1.0 + FC 跳转包全线上；11 种条件逐条线上命中；控制台存/删回环 200；**顺带修掉 I5 起的多标签筛选缺陷**（tags/excludeTags 没拆逗号）；108 例全绿，见 `docs/verification/i9-results.md` |
+| I9 | R9 动态跳转规则 | **已验收** | I8 | B9 全勾 | 2026-11-12 当日 | 迁移 0018/0019 + 兼容层 version 5.1.0 + FC 跳转包全线上；11 种条件逐条线上命中；控制台存/删回环 200；**顺带修掉 I5 起的多标签筛选缺陷**（tags/excludeTags 没拆逗号）；109 例全绿，见 `docs/verification/i9-results.md` |
 
 状态词只用四个：**未开始 / 进行中 / 待他拍板 / 已验收**。
 
