@@ -178,6 +178,7 @@ SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli deploy compat \
 ```
 - 为什么多一步构建：`functions-cli` 的部署包以入口文件为准，多文件/静态资源支持有歧义（I5 实测 `.txt` 进不了部署包，官方文档又写 `index.ts + foo.ts` 可多文件）。部署统一走单文件构建产物，消除歧义；本地开发与单测仍直接用 `handler.ts`。
 - 改代码后：`handler.ts` 是唯一改动点；`index.ts` 只是本地入口，`dist/index.ts` 由脚本生成（gitignore）。
+- **标签参数口径**：`tags` / `excludeTags` 走**逗号分隔**（上游 `splitByComma()`，控制台实发 `excludeTags=i3,i4`）。兼容层会拆逗号，也兼容 `tags[]=a&tags[]=b` 数组写法；`tagsMode` / `excludeTagsMode` 缺省为 `any`（对齐上游 `TagsMode::ANY`）。
 - 回滚：`git checkout <旧 commit> -- supabase/functions/compat/handler.ts` → 重新 build → 重新 deploy；或回退整个 commit 后同样走一遍。
 - 验证：`curl …/functions/v1/compat/rest/v3/health` → `{"status":"pass","version":"5.1.0"}`；再带 key 打一个真实路由（如 `GET /rest/v3/short-urls?itemsPerPage=1`）。
 

@@ -473,3 +473,35 @@ Deno.test('I9：excludeTags 传给 list_short_urls', async () => {
   assertEquals(call?.body.p_excluded_tags, ['alpha', 'beta']);
   assertEquals(call?.body.p_excluded_tags_mode, 'any');
 });
+
+Deno.test('I9：tags/excludeTags 逗号串要拆成数组（shlink splitByComma 口径）', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  await req('/short-urls?tags=i3,i4%20x&excludeTags=a,b', { headers: AUTH });
+  const call = calls.find((c) => c.fn === 'list_short_urls');
+  assertEquals(call?.body.p_tags, ['i3', 'i4 x']);
+  assertEquals(call?.body.p_excluded_tags, ['a', 'b']);
+});
+
+Deno.test('I9：数组写法 tags[]= 与逗号写法可混用', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  await req('/short-urls?tags%5B%5D=a&tags%5B%5D=b,c&excludeTags%5B%5D=x,y', { headers: AUTH });
+  const call = calls.find((c) => c.fn === 'list_short_urls');
+  assertEquals(call?.body.p_tags, ['a', 'b', 'c']);
+  assertEquals(call?.body.p_excluded_tags, ['x', 'y']);
+});
+
+Deno.test('I9：tagsMode/excludeTagsMode 缺省为 any（对齐上游 TagsMode::ANY）', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  await req('/short-urls?tags=a', { headers: AUTH });
+  const call = calls.find((c) => c.fn === 'list_short_urls');
+  assertEquals(call?.body.p_tags_mode, 'any');
+  assertEquals(call?.body.p_excluded_tags_mode, 'any');
+});
+
+Deno.test('I9：显式传的 tagsMode=all 仍然生效', async () => {
+  reset((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
+  await req('/short-urls?tags=a,b&tagsMode=all&excludeTags=c&excludeTagsMode=all', { headers: AUTH });
+  const call = calls.find((c) => c.fn === 'list_short_urls');
+  assertEquals(call?.body.p_tags_mode, 'all');
+  assertEquals(call?.body.p_excluded_tags_mode, 'all');
+});

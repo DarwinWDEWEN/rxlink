@@ -275,7 +275,7 @@
 
 ## I9 —— R9 动态跳转规则
 
-> **状态：兼容层与数据面已上线并验收（2026-11-12）；跳转函数待上传 zip。** 迁移 0018/0019 已应用、兼容层已部署（version 5.1.0）、11 种条件端到端线上验通；`fc/redirect` 的规则接入已完成并本机全绿，等用户把 `dist/redirect.zip` 上传到 FC 后做跳转侧线上验收。
+> **状态：已上线并验收（2026-11-12）。** 迁移 0018/0019 已应用、兼容层已部署（version 5.1.0）、FC 跳转包已上传部署；11 种条件逐条线上命中，控制台存/删回环 200；顺带修掉 I5 起的多标签筛选缺陷（tags/excludeTags 逗号串未拆）。
 > 设计：`docs/superpowers/specs/2026-11-12-r9-dynamic-redirect-rules-design.md`；实施计划：`docs/superpowers/plans/2026-11-12-r9-dynamic-redirect-rules.md`；验证记录：`docs/verification/i9-results.md`。
 
 **目标**：让 shlink 的动态跳转规则从「只读、恒空」变成「可存、可用」——控制台能保存 11 种条件的规则，跳转时按规则求值并跳到规则指定的目标。
@@ -433,11 +433,16 @@
 - [x] 线上 seq 独立性复验：改一次规则 `rules_seq` 31→55、`link_seq` 恒 101
 - [x] 线上测试规则已清空（`short_url_redirect_rule` 0 行 / `redirect_condition` 0 行）
 - [x] `dist/redirect.zip` 重打包（7 个文件，含 `china-geo.bin`），待上传
-- [ ] **他上传 `dist/redirect.zip` 到 FC 跳转函数并部署**
-- [ ] 线上跳转验收：写一条 `query-param src=wechat` 规则 → `?src=wechat` 跳规则目标、`?src=other` 跳默认长链（等 ≤6s 让规则缓存生效）
-- [ ] 线上 geo 条件验收：国内 IP 命中省名规则，境外 IP 不命中
-- [ ] 控制台界面人工验收：跳转规则页能存能删、条件类型下拉出 11 种、排除标签筛选生效、各页 Network 无 4xx（`mercure-info` 除外）
-- [ ] 性能抽查：有规则 vs 无规则的 20 次最小耗时差 < 5ms
+- [x] **用户上传 `dist/redirect.zip` 到 FC 跳转函数并部署**（2026-11-12）
+- [x] 线上跳转验收：写 `query-param src=wechat` 规则 → `?src=wechat` 跳规则目标、`?src=other` 跳默认长链（等 ≤7s 让规则缓存生效）；连测 3 次一致，非新旧混跑
+- [x] 线上 11 种条件逐条命中（含 geo 省名中英文、国家码、IP 精确/CIDR、UA 设备/浏览器、语言、查询参数三类、日期两类）
+- [x] 线上反向用例：境外 IP + geo 省名规则不命中；桌面 UA + `device=mobile` 不命中；像素路由不套用规则
+- [x] 控制台界面验收（浏览器实测）：页脚 `Server: v5.1.0`；条件类型下拉 **11 种全在**；设备值下拉 8 个；新增规则保存 → `POST …/redirect-rules` **200**（不再是 501）且落库；删除并保存 → 200 且库清空
+- [x] 「排除标签」筛选器出现且生效：控制台填 `i3`+`i4` → URL `?excludeTags=i3%2Ci4` → 带 tag i4 的短链被正确排除
+- [x] **发现并修复缺陷**：多标签筛选被逗号串打哑（`tags`/`excludeTags` 没拆逗号；上游用 `splitByComma()`）。修复后 8 项线上断言全通过；`tagsMode`/`excludeTagsMode` 缺省对齐上游 `TagsMode::ANY`
+- [x] 性能抽查：规则求值进程内开销 **0.980 µs/次**；网络层 ABBA 交错对照差异测不出（p50/mean 反而「有规则」更快）
+- [x] 最终回归：ipmat 8 + rules 20 + china-geo 6 + redirect 40 + compat 34 = **108 例全绿**；`deno check` 干净；线上 robots 200 / 404 / pixel 200 / 302 全旧行为不变
+- [x] 测试数据清理：规则 0 条、条件 0 条、临时 key 已删、短链启用状态已还原（库恢复 2 key / 1 启用短链）
 - [x] 验收归档：`docs/verification/i9-results.md`
 
 ---
@@ -457,7 +462,7 @@
 | I6 | 生产硬化 | **已验收** | I5 | B6 全勾 | 2026-11-10 当日 | 探针退场/prune 转真/压测(p95 416ms)/可观测/runbook/HTTPS 复测全通（B6 6/6；cdndev 放弃），见 `docs/verification/i6-results.md` |
 | I7 | 地理富化（#41–#44） | **进行中（主体已上线）** | I6 | B7 全勾 | 2026-11-10 → 2026-11-11 | #41 迁移 0012 + #42 跳转/drain 带 remote_addr + #43 富化函数 + #44 契约与兜底**全部上线**；换源 DB-IP；`0013` 修回写失配；mmdb 随 Layer 分发 + 触发改每小时；`0014` 收紧入队侧 IP 留存（线上 inbox 持 IP 291→0）；FC 富化函数手动跑通 275/275；真实流量端到端探针闭环；DB-IP 署名代码完成（7 单测）；**剩他两个动作**：重传 `console.zip`、确认触发器 cron 是 6 字段 |
 | I8 | M2 收尾批次（R1–R8） | **已验收** | I7 | B8 全勾 | 2026-11-11 当日 | 迁移 0015–0017 + 跳转 R1/R2/R3/R8 + 兼容层 R4/R6/R7 + cron R5 全上线；compat 改单文件构建包；见 `docs/verification/i8-results.md` |
-| I9 | R9 动态跳转规则 | **进行中（兼容层与数据面已上线验收）** | I8 | B9 全勾 | 2026-11-12 | 迁移 0018/0019 已应用；兼容层 version 5.1.0 已部署，11 种条件端到端线上验通；`rules.js` + `china-geo.bin` + `rules-cache.js` 本机全绿（redirect 40/40）；**剩他上传 `dist/redirect.zip` 到 FC**，之后做跳转侧线上验收 |
+| I9 | R9 动态跳转规则 | **已验收** | I8 | B9 全勾 | 2026-11-12 当日 | 迁移 0018/0019 + 兼容层 version 5.1.0 + FC 跳转包全线上；11 种条件逐条线上命中；控制台存/删回环 200；**顺带修掉 I5 起的多标签筛选缺陷**（tags/excludeTags 没拆逗号）；108 例全绿，见 `docs/verification/i9-results.md` |
 
 状态词只用四个：**未开始 / 进行中 / 待他拍板 / 已验收**。
 
@@ -493,5 +498,6 @@
 | 2026-11-11 | 采纳用户两条建议：① mmdb 改为随包分发（brotli q6 → 52.35MB，走 FC Layer，运行时不联网、不出公网，冷启动 15.5s→1.0s，省每月约 29 元出网流量；新增 `build-geoip-bundle.mjs` / `build-geo-enrich-fc.mjs` 两个可复现构建脚本）② 定时触发器由每分钟改每小时（批处理上限 5→20 批，另加 45s 时间预算防超时）；单测 20→24 例 |
 | 2026-11-11 | I7 主体完成：跳转包已上传（线上实测有真实流量带 remote_addr）；**发现并修 `apply_visit_locations` 回写失配** —— PostgREST 的 timestamptz 只有毫秒精度，`(id, occurred_at)` 双条件对亚毫秒行必然失配（实测 0 行、IP 不清）→ 新增 `0013` 改为只按 `id` 匹配（id 全局唯一）+ 单条 set-based UPDATE；**换源 MaxMind → DB-IP City Lite**（MaxMind 免费版「仅个人使用」不适配对外服务，DB-IP 免注册免 key 且 CC BY 4.0 允许商用，代价是无 time_zone 字段）；`fc/geo-enrich/` 实现完成（lib 纯逻辑 + index handler，20 例单测全绿），真实 mmdb 端到端跑通（拉批 15 / 回写 15 / 369ms，库内 location 落、IP 清零）；`dist/geo-enrich.zip` 已打包待部署 |
 | 2026-11-11 | I7 上线与收尾：用户部署 FC 富化函数（Layer + 代码包 + 环境变量 + 每小时触发器），手动执行 `{"ok":true,"batches":1,"pulled":275,"updated":275}`，库内 291 行有地理结果、`ip_pending=0`；**新增 `0014`** 覆盖 `drain_visit_inbox`，落库后立即清空 `visit_inbox.remote_addr`（入队侧 IP 留存从最长 1 天 → 分钟级，线上 inbox 持 IP 行 291→0），DO 块断言「inbox 清空 + visit 仍拿到 IP」通过；真实流量端到端探针闭环（`x-forwarded-for: 8.8.8.8` → US·California·Mountain View）；**DB-IP 署名**实现在 `fc/console/index.js` 注入页脚（不重编 Angular，7 例单测全绿），`dist/console.zip` 已重打包待上传；权限复核：visit/visit_inbox 均 force RLS + 0 policy，anon/authenticated 无表级与列级授权；`design/`（另一任务产物，21MB）移出版本控制，文件保留在工作区 |
+| 2026-11-12 | I9 验收：FC 跳转包已上传部署，线上 11 种条件逐条命中（含 geo 省名中英文/国家码、IP 精确与 CIDR、UA 设备与浏览器、语言、查询参数三类、日期两类），反向用例与像素路由不套规则均符合预期；控制台浏览器实测：页脚 `Server: v5.1.0`、条件类型下拉 11 种全在、新增/删除保存均 200（不再 501）；**发现并修复既有缺陷** —— shlink 的 `tags`/`excludeTags` 是逗号分隔（上游 `splitByComma()`，web-component 实发 `excludeTags=i3,i4`），我们没拆逗号导致多标签筛选静默失效（`tags` 自 I5 起就有此欠账，`excludeTags` 是 I9 新加），修复后 8 项线上断言全通过，并把 `tagsMode`/`excludeTagsMode` 缺省对齐上游 `TagsMode::ANY`；规则求值进程内开销 0.980 µs/次，网络层无可见影响；最终回归 108 例全绿
 | 2026-11-12 | I9 R9 动态跳转规则启动：设计稿与实施计划定稿（`docs/superpowers/specs|plans/2026-11-12-r9-dynamic-redirect-rules*`）；`rules.js` 条件求值（20/20）、`china-geo.bin` 中国省级表（6/6 + 20 万 IP 对拍）、迁移 0018/0019（规则表 + 独立 `rules_version` + 排除标签筛选）、兼容层 11 种条件校验 + version 5.1.0（30/30）、跳转函数 `rules-cache.js` 接入（redirect 40/40）；**关键设计**：规则写操作只 bump `rules_version`，`link_version` 恒不动（线上复验 31→55 vs 恒 101）；计划里的代码块全部先实跑再落地，抓出 4 处真 bug（含两处 forward_query 断言错误）
 | 2026-11-11 | I8 收尾批次完成并验收：迁移 0015–0017 应用 + 断言（备份表已建）、cron job 10 `rxlink-expired`；跳转函数 R1/R2/R3/R8（404 HTML / 追踪像素 / robots.txt / 追踪开关，单测 40/40）与兼容层 R4/R6/R7（shorten / 访问导出 / key 过期，单测 15/15）上线；compat 部署改单文件构建包（`scripts/build-compat-function.mjs`，消除多文件歧义）；线上 R1–R8 全通、测试数据已清；git `2437179`；归档 `docs/verification/i8-results.md` |

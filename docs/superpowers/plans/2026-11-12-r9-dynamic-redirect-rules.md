@@ -2341,6 +2341,17 @@ function validateRules(body: unknown): Array<Record<string, unknown>> {
     p_excluded_tags_mode: str(q.get('excludeTagsMode')) ?? 'all',
 ```
 
+> ⚠️ **实施后修正（2026-11-12 线上验收时发现）**：上面这版只按数组参数取值，**没拆逗号** —— 但 shlink 的 `tags` / `excludeTags` 是**逗号分隔**的（上游 `splitByComma()`，`shlink/module/Core/functions/functions.php:243`；web-component 实发 `excludeTags=i3,i4`）。结果是多标签被当成一个字面标签名，`t.name = any(...)` 永不命中 → **筛选静默失效**（`excludeTags` 全废，`tags` 自 I5 起就有此欠账）。改为：
+>
+> ```ts
+> function parseTagList(url: URL, name: string): string[] {
+>   const raw = [...url.searchParams.getAll(`${name}[]`), ...url.searchParams.getAll(name)];
+>   return raw.flatMap((v) => String(v).split(',')).map((t) => t.trim()).filter((t) => t !== '');
+> }
+> ```
+>
+> `tags` 与 `excludeTags` 都走它；`tagsMode` / `excludeTagsMode` 的缺省值同时从 `'all'` 改成 `'any'`（对齐上游 `ShortUrlsParams::$tagsMode = TagsMode::ANY`）。详见 `docs/verification/i9-results.md` §7c。
+
 ### Step 4: 跑测试确认通过
 
 ```bash

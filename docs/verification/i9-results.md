@@ -127,24 +127,121 @@
 
 > 计划里的代码块**全部先在本机实跑再落地**，抓出 4 处真 bug，其中两处是计划里的断言写错了：`forward_query` 为 true 时，query 会拼在**规则目标**上（`…/rule?src=wechat`）也会拼在**默认长链**上（`…/ok?src=other`），计划原本期望的是不带 query 的版本。
 
-## 7. 待办（跳转侧线上验收，需用户先上传 zip）
+## 7. 跳转侧线上验收（FC 已上传部署，2026-11-12）
 
-- [ ] **用户上传 `dist/redirect.zip` 到 FC 跳转函数并部署**（FC 发布是控制台动作，脚本代劳不了）。
-- [ ] 线上跳转验收：写一条 `query-param src=wechat` 规则 → `?src=wechat` 跳规则目标、`?src=other` 跳默认长链（写完**等 ≤6 秒**让规则缓存轮询到新 seq）。
-- [ ] 线上 geo 条件验收：国内 IP 命中省名规则、境外 IP 不命中。
-- [ ] 控制台界面人工验收：跳转规则页能存能删、条件类型下拉出 **11 种**、排除标签筛选生效、各页 Network 无 4xx（`mercure-info` 除外）。
-- [ ] 性能抽查：有规则 vs 无规则，20 次最小耗时差 < 5ms。
+用户把 `dist/redirect.zip` 上传到 FC 跳转函数并部署后，逐项线上实测。
 
-**上传前的线上基线**（2026-11-12，旧代码）：
+**规则命中 / 不命中**（`query-param src=wechat`）：
+
+| 请求 | Location |
+|---|---|
+| `GET /2b9yj?src=wechat` | `https://example.com/i9-mobile?src=wechat` |
+| `GET /2b9yj?src=other` | `https://example.com/a?x=1&y=2&src=other`（默认长链 + forwardQuery） |
+| `GET /2b9yj`（无 query） | `https://example.com/a?x=1&y=2` |
+
+连测 3 次结果一致 → 不是新旧代码混跑。
+
+**11 种条件类型逐条线上命中**（每条单独写规则、等 ≤7s 规则缓存生效、再 curl）：
+
+| 条件 | 构造的请求 | 结果 |
+|---|---|---|
+| `device=mobile` | 移动 UA | ✅ 命中 |
+| `device=ios` | iPhone UA | ✅ 命中 |
+| `device=android` | Android UA | ✅ 命中 |
+| `browser=chrome` | Chrome UA | ✅ 命中 |
+| `language=zh-CN` | `Accept-Language: zh-CN,zh;q=0.9` | ✅ 命中 |
+| `query-param src=wechat` | `?src=wechat` | ✅ 命中 |
+| `any-value-query-param src` | `?src=x` | ✅ 命中 |
+| `valueless-query-param src` | `?src`（无值） | ✅ 命中 |
+| `ip-address=120.235.196.208` | 伪造 `x-forwarded-for` | ✅ 命中 |
+| `ip-address=120.235.0.0/16` | 同上（CIDR） | ✅ 命中 |
+| `geolocation-country-code=CN` | 广东 IP | ✅ 命中 |
+| `geolocation-city-name=广东` | 广东 IP | ✅ 命中 |
+| `geolocation-city-name=Guangdong` | 广东 IP | ✅ 命中（英文省名也认） |
+| `before-date=2030-01-01` | 当前时间 | ✅ 命中 |
+| `after-date=2020-01-01` | 当前时间 | ✅ 命中 |
+
+**反向用例**：境外 IP `8.8.8.8` 配 geo 省名规则 → **不命中**（落回默认长链）；桌面 UA 配 `device=mobile` → **不命中**。
+
+**像素路由不套用规则**：`GET /2b9yj/track?src=wechat`（规则此刻是命中的）→ 200 `image/gif`，无 Location。
+
+**旧行为回归**：robots 200 / 陌生码 404 / 像素 200 / `/2b9yj` 302 默认长链，全部与 I8 口径一致。
+
+## 7b. 控制台界面验收（浏览器实测）
+
+控制台从 `GET /health` 的 `version` 驱动 feature flag（`shlink-web-client/src/servers/reducers/selectedServer.ts:24` → `health().then(({version}) => …)`）。web-component 的阈值表（`@shlinkio/shlink-web-component/dist/index.js` 的 `Ui`）：
+
+| flag | minVersion | 5.1.0 下 |
+|---|---|---|
+| `ipRedirectCondition` | 4.2.0 | ✅ 开 |
+| `geolocationRedirectCondition` | 4.3.0 | ✅ 开 |
+| `advancedQueryRedirectConditions` | 4.5.0 | ✅ 开 |
+| `desktopDeviceTypes` | 4.5.0 | ✅ 开 |
+| `filterShortUrlsByExcludedTags` | 4.6.0 | ✅ 开 |
+| `dateRedirectConditions` | 5.0.0 | ✅ 开 |
+| `browserRedirectConditions` | **5.1.0** | ✅ 开（**选 5.1.0 正是为了这个**） |
+
+> ⚠️ 若版本停在 4.x，控制台**根本不会显示** browser 条件与「排除标签」筛选器 —— 这就是版本旋钮要提到 5.1.0 的原因。
+
+实测（`https://console.example.com`）：
 
 | 项 | 结果 |
 |---|---|
-| `GET /robots.txt` | 200（`User-agent: *` + `Allow: /9e6h3` + `Disallow: /`） |
-| `GET /nosuch` | 404 |
-| `GET /2b9yj/track` | 200 `Content-Type: image/gif` |
-| `GET /2b9yj` | 302 → `https://example.com/a?x=1&y=2` |
-| `Server-Timing` | `resolve;dur=0;cached=1`；`X-Link-Snapshot: 1|101|7215` |
-| 性能 | 20 次取最小 **85.0ms** |
+| 页脚版本 | `Server: v5.1.0 - Client: latest` |
+| 跳转规则页 | 正常打开，显示已存规则与「If no conditions match, visitors will be redirected to: …」 |
+| 条件类型下拉 | **11 种全在**：device / language / query-param / any-value-query-param / valueless-query-param / ip-address / geolocation-country-code / geolocation-city-name / before-date / after-date / browser |
+| 设备值下拉 | **8 个**：Android / iOS / Any mobile device / Windows / MacOS / Linux / ChromeOS / Any desktop device |
+| 新增规则并保存 | Network 面板 `POST /rest/v3/short-urls/2b9yj/redirect-rules` → **200**（不再是 501）；库里落库（id=35, device/mobile） |
+| 删除规则并保存 | `POST …/redirect-rules` → **200**；库里 `short_url_redirect_rule` 0 行 / `redirect_condition` 0 行；页面显示「This short URL has no dynamic redirect rules」 |
+| 「Without tags…」筛选器 | 出现，展开有 `Filter by excluded tag:` + `Mode: Any/All` |
+
+> 交互口径（shlink 原生）：规则行上的垃圾桶**只改本地列表**，必须再点「Save rules」才落库；删除后页面上的「Redirect rules properly saved.」提示是上一次保存的残留 toast。Network 面板证实删除动作本身不发请求。
+
+## 7c. 发现并修复的缺陷：多标签筛选被逗号串打哑
+
+**现象**：控制台「排除标签」勾选后**结果条数不变**（静默无反应）。
+
+**根因**：shlink 的 `tags` / `excludeTags` 走**逗号分隔**——上游有 `splitByComma()`（`shlink/module/Core/functions/functions.php:243`：`array_map(trim(...), explode(',', $value))`），web-component 也确实发的是 `excludeTags=i3,i4`（bundle 里 `excludeTags: s.length > 0 ? s.join(",") : void 0`）。而我们的兼容层只按数组参数取 `tags[]` / `tags`，**没有拆逗号** → `"i3,i4"` 被当成一个字面标签名 → `t.name = any(…)` 永不命中 → 筛选静默失效。
+
+**影响面**：
+- `excludeTags`（I9 新加）——完全失效。
+- `tags`（**I5 起的既有缺陷**）——多标签筛选同样失效（单标签因无逗号而侥幸正常）。
+
+**修复**（`handler.ts` 的 `parseTagList()`）：逗号串与数组写法都拆成数组再下发；`tagsMode` / `excludeTagsMode` 缺省值同时对齐上游的 `TagsMode::ANY`（原来是 `all`）。
+
+**线上复验**（临时启用 id=4「compat1」(tag x) 与 id=11「i4v」(tag i4)，测完恢复 `enabled=false`）：
+
+| 请求 | 修复前 | 修复后（期望） | 修复后（实测） |
+|---|---|---|---|
+| 无筛选 | 3 | 3 | 3 |
+| `tags=i4,x` mode=any | 0 | 2 | **2** ✅ |
+| `tags=i4,x` mode=all | 0 | 0 | 0 |
+| `tags[]=i4&tags[]=x` mode=any | 2 | 2 | 2 |
+| `excludeTags=i4,x` mode=any | 3 | 1 | **1** ✅ |
+| `excludeTags=i4,x` mode=all | 3 | 3 | 3 |
+| `excludeTags[]=i4&[]=x` mode=any | 1 | 1 | 1 |
+| `tags=i4`（不带 mode，缺省 any） | 1 | 1 | 1 |
+
+**UI 端到端**：控制台「Without tags…」填 `i3` + `i4` → URL 变成 `?excludeTags=i3%2Ci4`（正是逗号形态）→ 带 tag i4 的 i4v 被正确排除，列表只剩 2b9yj。
+
+## 7d. 性能抽查
+
+规则求值的**进程内真实开销**（20 万次微基准，用线上真实的 `rules.js`）：
+
+| 环节 | 耗时 |
+|---|---|
+| `buildContext`（UA + Accept-Language 解析） | 0.858 µs/次 |
+| `evaluate`（1 条规则 1 个条件） | 0.179 µs/次 |
+| **完整热路径求值** | **0.980 µs/次** |
+
+网络层 ABBA 交错对照（有规则 / 无规则各 30 次，顺序偏差已抵消）：
+
+| | min | p50 | mean |
+|---|---|---|---|
+| 有规则 | 109.7ms | 149.8ms | 164.8ms |
+| 无规则 | 99.1ms | 159.4ms | 169.1ms |
+
+差异在噪声里且**符号会翻转**（p50/mean 反而是「有规则」更快）——即**测不出影响**。早先一次非交错测量的 16ms 差值是顺序偏差（同一 URL 连续两次请求，后发者系统性偏慢），不是规则求值的代价。
 
 ## 8. 测试汇总
 
@@ -154,9 +251,9 @@
 | `fc/redirect/test/rules.test.js` | 20 | ✅ 全绿 |
 | `fc/redirect/test/china-geo.test.js` | 6 | ✅ 全绿 |
 | `fc/redirect/test/redirect.test.js` | 40 | ✅ 全绿 |
-| `supabase/functions/compat/test/compat.test.ts` | 30 | ✅ 全绿 |
+| `supabase/functions/compat/test/compat.test.ts` | 34 | ✅ 全绿 |
 | `deno check`（compat 入口/逻辑/测试） | — | ✅ 干净 |
-| **合计** | **104** | ✅ |
+| **合计** | **108** | ✅ |
 
 ## 9. 遗留与口径
 
@@ -165,3 +262,5 @@
 3. **UA 解析与上游有差异**（Android WebView 判为 chrome 而非 `android_browser`）；已在设计稿 §10.1 记为已知限制。
 4. **平台网关会代替客户端跟随函数的 3xx 跳转**（只对 Edge Function 直返 302 成立）；跳转跑在 FC 侧，不受影响。
 5. **规则生效有 ≤5s 延迟**（`RULES_POLL_MS`）。刚写完就 curl 可能拿到默认长链——这是设计，不是 bug。
+6. **`tags` 的多标签筛选缺陷是 I5 起的既有欠账**，本次（I9）在实现 `excludeTags` 时发现并一并修掉了（见 §7c）。修的是兼容层的参数解析，`list_short_urls` 的 SQL 侧没动。
+7. **`deno lint` 有一条既有告警**（`handler.ts:346` `deleteVisits` 缺 `await`），不是本次改动引入，未动。

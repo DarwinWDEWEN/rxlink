@@ -254,18 +254,30 @@ function validateRules(body: unknown): Array<Record<string, unknown>> {
   return rules as Array<Record<string, unknown>>;
 }
 
+// shlink 的 tags/excludeTags 走逗号分隔（上游 splitByComma，functions.php:243），
+// 控制台的 web-component 实际发的就是 `tags=a,b`；同时兼容 `tags[]=a&tags[]=b` 数组写法。
+// 不拆逗号的话多标签会被当成一个字面标签名，筛选静默失效。
+function parseTagList(url: URL, name: string): string[] {
+  const raw = [...url.searchParams.getAll(`${name}[]`), ...url.searchParams.getAll(name)];
+  return raw
+    .flatMap((v) => String(v).split(','))
+    .map((t) => t.trim())
+    .filter((t) => t !== '');
+}
+
 async function listShortUrls(url: URL): Promise<Json> {
   const q = url.searchParams;
   const order = parseOrder(q.get('orderBy'));
-  const tags = [...q.getAll('tags[]'), ...q.getAll('tags')].filter((t) => t !== '');
-  const excludedTags = [...q.getAll('excludeTags[]'), ...q.getAll('excludeTags')].filter((t) => t !== '');
+  const tags = parseTagList(url, 'tags');
+  const excludedTags = parseTagList(url, 'excludeTags');
   const result = await rpc('list_short_urls', {
     p_page: int(q.get('page'), 1),
     p_items: int(q.get('itemsPerPage'), 20),
     p_search: str(q.get('searchTerm')),
     p_domain: str(q.get('domain')),
     p_tags: tags.length ? tags : null,
-    p_tags_mode: str(q.get('tagsMode')) ?? 'all',
+    // 上游默认是 ANY（ShortUrlsParams::$tagsMode = TagsMode::ANY）
+    p_tags_mode: str(q.get('tagsMode')) ?? 'any',
     p_order_field: order.field,
     p_order_dir: order.dir,
     p_exclude_max: bool(q.get('excludeMaxVisitsReached')),
@@ -273,7 +285,7 @@ async function listShortUrls(url: URL): Promise<Json> {
     p_start: str(q.get('startDate')),
     p_end: str(q.get('endDate')),
     p_excluded_tags: excludedTags.length ? excludedTags : null,
-    p_excluded_tags_mode: str(q.get('excludeTagsMode')) ?? 'all',
+    p_excluded_tags_mode: str(q.get('excludeTagsMode')) ?? 'any',
   });
   // SDK 解包的是 { shortUrls: { data, pagination } }，不是 data 本身
   return { shortUrls: result };
