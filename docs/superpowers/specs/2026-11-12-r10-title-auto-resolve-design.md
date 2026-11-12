@@ -492,11 +492,12 @@ rpc('update_short_url', { p_code: code, p_domain: domain, p_patch: patch, p_auto
 
 | Task | 内容 | 完成判据 |
 |---|---|---|
-| T1 | 迁移 0020：加列 + 重建两个 RPC + 权限收口 | 库级验证：建链/编辑/来源标记/权限（`anon` 调不到 RPC） |
+| T1 | 迁移 0020：加列 + 重建两个 RPC + 权限收口 | 库级验证：建链/编辑/来源标记/权限（`anon` 调不到 RPC）/旧签名调用仍可用 |
 | T2 | 纯逻辑：标题提取 / charset / 转码 / 实体解码 / 截断 | `title-resolver.test.ts` 全绿 |
-| T3 | 抓取与 SSRF：IP 判定 / 重定向 / 超时 | SSRF 拒绝表逐条覆盖 |
-| T4 | 编排：handler 接线 + 集成测试 | `compat.test.ts` 全绿（既有 35 例不得回归） |
-| T5 | 部署 compat + 线上验收 + 文档归档 | `docs/verification/r10-results.md` |
+| T3 | SSRF 地址判定 + 主机校验（IP 解析、禁止网段、fail-closed） | SSRF 拒绝表逐条覆盖 |
+| T4 | 抓取主流程：fetch / 重定向 / 超时 / 流式读取 / 失败原因码 | 抓取用例全绿（含日志不泄露完整 URL） |
+| T5 | 编排：handler 接线 + 集成测试 | `compat.test.ts` 全绿（既有 35 例不得回归） |
+| T6 | 部署 compat + 线上验收 + 文档归档 | `docs/verification/r10-results.md` |
 
 ---
 
