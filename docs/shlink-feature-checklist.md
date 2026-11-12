@@ -13,9 +13,9 @@
 |---|---|---|---|---|
 | 1 | `health` | GET `/health` | ✅ | 不校验 key，返回 `{status:'pass',version:'5.1.0'}` |
 | 2 | `listShortUrls` | GET `/short-urls` | ✅ | 搜索/标签（all·any）/域名/时间区间/排除max·过期/排序/分页全支持 |
-| 3 | `createShortUrl` | POST `/short-urls` | ✅ | 自定义 slug、短码长度、findIfExists、标签、标题、crawlable、forwardQuery、有效期、maxVisits |
+| 3 | `createShortUrl` | POST `/short-urls` | ✅ | 自定义 slug、短码长度、findIfExists、标签、标题、crawlable、forwardQuery、有效期、maxVisits、**未填标题时自动抓目标页 `<title>`**（I10；env `AUTO_RESOLVE_TITLES` 控制，我们默认开，上游默认关） |
 | 4 | `getShortUrl` | GET `/short-urls/{code}` | ✅ | 含 `domain` 查询参数 |
-| 5 | `updateShortUrl` | PATCH `/short-urls/{code}` | ✅ | 整组替换标签 |
+| 5 | `updateShortUrl` | PATCH `/short-urls/{code}` | ✅ | 整组替换标签、**改长链时刷新自动解析的标题（手填标题不被覆盖）** |
 | 6 | `deleteShortUrl` | DELETE `/short-urls/{code}` | ✅ | 软删（`enabled=false`） |
 | 7 | `singleStepCreateShortUrl` | GET `/short-urls/shorten` | ❌ | 控制台不调它（契约 §3 注）；属决策 D1 延伸，未实现 |
 | 8 | `getShortUrlVisits` | GET `/short-urls/{code}/visits` | ✅ | 时间区间 / excludeBots / 分页 |

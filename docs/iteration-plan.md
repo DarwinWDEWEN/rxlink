@@ -447,6 +447,55 @@
 
 ---
 
+## I10 —— R10 标题自动解析
+
+> **状态：已上线并验收（2026-11-12）。** 迁移 0020 已应用、兼容层已部署（version 5.1.0）；建链自动抓标题、编辑刷新自动解析的标题、手填标题粘性、SSRF 拦截、开关降级全部线上实测通过。
+> 设计：`docs/superpowers/specs/2026-11-12-r10-title-auto-resolve-design.md`；实施计划：`docs/superpowers/plans/2026-11-12-r10-title-auto-resolve.md`；验证记录：`docs/verification/r10-results.md`。
+
+**目标**：让 shlink 的「标题自动解析」在 rxlink 上真正可用——建链时未填标题就自动抓目标页 `<title>` 写进 `short_url.title`，并记住标题来源，使手填标题不被自动覆盖。
+
+**范围**
+
+1. **数据面（迁移 0020）**：`short_url.title_was_auto_resolved` 记录来源；重建 `create_short_url`（13→14 参，`p_title_was_auto_resolved`）与 `update_short_url`（3→4 参，`p_auto_title`）；权限收口按新签名重做。
+2. **抓取模块（`title-resolver.ts`，新建）**：标题提取 / charset 探测 / 转码 / 实体解码 / 截断（纯函数）+ SSRF 地址判定 + 抓取主流程（fetch、15 跳重定向、3s 总超时、流式读取）。
+3. **兼容层（`handler.ts`）**：建链未填标题才抓；编辑时用户给的 title 优先，改长链时抓到的标题走独立参数 `p_auto_title`；`AUTO_RESOLVE_TITLES` 环境变量开关（默认开）。
+4. **构建脚本（`build-compat-function.mjs`）**：部署包是单文件 → 本地相对 import 必须内联（否则运行时加载失败）。
+
+**出口判据**：见 B10。
+
+**关键设计决策**
+
+- **写标题的判定放在 DB 内**（`update_short_url` 的 UPDATE 语句里），不在 handler：判定需要「旧标题 + 旧来源」的原子读取，放 DB 省掉一次读 RPC，且与上游 `ShortUrl::update()` 的判定位置一致。
+- **抓到的自动标题走独立参数、绝不混进 `p_patch`**：`p_patch` 里有 `title` 键即代表「用户手填」，两者必须可区分。
+- **SSRF fail-closed**：任一解析 IP 落进禁止网段就整体拒绝（不挑一个）；每跳重定向重新校验；认不出来的地址一律拒。
+- **迁移期兼容**：新参数都带默认值 → 旧签名调用点仍能解析到新函数，所以「迁移先行、代码后发」安全（线上实测：未重部署的旧 compat 照常建链）。
+
+---
+
+## B10 —— I10 R10 标题自动解析
+- [x] 迁移 0020 切 6 条逐条应用成功（rc 全 0）；应用前备份两个函数定义到 `/tmp`
+- [x] 0020 断言：列 `boolean NOT NULL default false`；新签名 `create_short_url(...,boolean)` / `update_short_url(...,text)`；`anon` 对两 RPC 均无 execute、`service_role` 有
+- [x] **迁移期兼容性**：旧 13 参位置参数调用成功；**未重新部署的旧版 compat 在迁移后建链仍 200**
+- [x] 写标题规则 8 条真实数据断言全通过（手填置 false / 手填粘性 / 空标题填充 / auto 刷新 / `p_auto_title=null` 保留原标题）
+- [x] 解析器单测 `title-resolver` 73/73；兼容层 `compat` 44/44（既有 35 + R10 9）；合计 **117 例全绿**；`deno check` 干净
+- [x] SSRF 拒绝表 22 条 + 放行表 7 条 + 主机校验 6 条全通过（任一解析结果落内网即整体拒绝）
+- [x] 日志断言：只出现「原因码 + host」，**不出现完整 URL**（query 里的 token 不泄露）
+- [x] **发现并修复部署级缺陷**：构建脚本不内联本地 import → 部署包引用不存在的模块；改为按依赖顺序内联 + 顶层重名/非相对 import 硬失败
+- [x] 产物自检：`import` 行数 0、`deno check` 干净、起真实进程冒烟（`/rest/v3/health` 200、无 key 401）
+- [x] compat 部署 ACTIVE；`/health` → `version: 5.1.0`
+- [x] **线上：Edge Function 出公网可行**（本轮最大未知项）—— 建链 `https://example.com/` → `title: "Example Domain"`、来源 true
+- [x] 线上 SSRF 拦截：`http://169.254.169.254/latest/meta-data/` 与 `http://localhost:5432/` → **建链 200 但无标题**
+- [x] 线上编辑：改长链 → 标题刷新为新页标题；手填标题 → 来源置 false；再改长链 → **手填标题未被覆盖**
+- [x] 线上开关：设 `AUTO_RESOLVE_TITLES=false` + 重新部署 → 不抓；取消 secret + 重新部署 → 恢复抓取
+- [x] 延迟实测：5 次建链 0.658/0.335/1.266/0.354/0.448s（p50 ≈ 0.45s，最大 1.27s，远低于 3s 上限）
+- [x] 清理：14 条验收短链已删（库恢复 1 条启用短链）、临时 key 已删（恢复 2 个）、secret 已取消、明文文件已删
+- [x] 验收归档：`docs/verification/r10-results.md`
+- [x] **修正设计稿 §4.6 的错误断言**：Postgres `UPDATE OF` 按 SET 列表判定 → 任何 `update_short_url` 都会 bump `link_version`（0008 起的既有行为，非 R10 引入）
+
+---
+
+> 这是唯一需要频繁更新的表。每轮结束后改这里的「状态 / 实际起止 / 备注」，并在下方变更记录加一行。
+
 # 【C】整体迭代进度清单
 
 > 这是唯一需要频繁更新的表。每轮结束后改这里的「状态 / 实际起止 / 备注」，并在下方变更记录加一行。
@@ -463,6 +512,7 @@
 | I7 | 地理富化（#41–#44） | **进行中（主体已上线）** | I6 | B7 全勾 | 2026-11-10 → 2026-11-11 | #41 迁移 0012 + #42 跳转/drain 带 remote_addr + #43 富化函数 + #44 契约与兜底**全部上线**；换源 DB-IP；`0013` 修回写失配；mmdb 随 Layer 分发 + 触发改每小时；`0014` 收紧入队侧 IP 留存（线上 inbox 持 IP 291→0）；FC 富化函数手动跑通 275/275；真实流量端到端探针闭环；DB-IP 署名代码完成（7 单测）；**剩他两个动作**：重传 `console.zip`、确认触发器 cron 是 6 字段 |
 | I8 | M2 收尾批次（R1–R8） | **已验收** | I7 | B8 全勾 | 2026-11-11 当日 | 迁移 0015–0017 + 跳转 R1/R2/R3/R8 + 兼容层 R4/R6/R7 + cron R5 全上线；compat 改单文件构建包；见 `docs/verification/i8-results.md` |
 | I9 | R9 动态跳转规则 | **已验收** | I8 | B9 全勾 | 2026-11-12 当日 | 迁移 0018/0019 + 兼容层 version 5.1.0 + FC 跳转包全线上；11 种条件逐条线上命中；控制台存/删回环 200；**顺带修掉 I5 起的多标签筛选缺陷**（tags/excludeTags 没拆逗号）；109 例全绿，见 `docs/verification/i9-results.md` |
+| I10 | R10 标题自动解析 | **已验收** | I9 | B10 全勾 | 2026-11-12 当日 | 迁移 0020（`title_was_auto_resolved` + 重建两个 RPC）+ `title-resolver.ts`（抓取 + SSRF）+ 兼容层接线；**实测 Edge Function 可出公网**；SSRF 拦截与手填标题粘性线上验证；117 例全绿；**顺带修掉构建脚本不内联本地 import 的部署级缺陷**，见 `docs/verification/r10-results.md` |
 
 状态词只用四个：**未开始 / 进行中 / 待他拍板 / 已验收**。
 
@@ -501,3 +551,4 @@
 | 2026-11-12 | I9 验收：FC 跳转包已上传部署，线上 11 种条件逐条命中（含 geo 省名中英文/国家码、IP 精确与 CIDR、UA 设备与浏览器、语言、查询参数三类、日期两类），反向用例与像素路由不套规则均符合预期；控制台浏览器实测：页脚 `Server: v5.1.0`、条件类型下拉 11 种全在、新增/删除保存均 200（不再 501）；**发现并修复既有缺陷** —— shlink 的 `tags`/`excludeTags` 是逗号分隔（上游 `splitByComma()`，web-component 实发 `excludeTags=i3,i4`），我们没拆逗号导致多标签筛选静默失效（`tags` 自 I5 起就有此欠账，`excludeTags` 是 I9 新加），修复后 8 项线上断言全通过，并把 `tagsMode`/`excludeTagsMode` 缺省对齐上游 `TagsMode::ANY`；规则求值进程内开销 0.980 µs/次，网络层无可见影响；最终回归 108 例全绿
 | 2026-11-12 | I9 R9 动态跳转规则启动：设计稿与实施计划定稿（`docs/superpowers/specs|plans/2026-11-12-r9-dynamic-redirect-rules*`）；`rules.js` 条件求值（20/20）、`china-geo.bin` 中国省级表（6/6 + 20 万 IP 对拍）、迁移 0018/0019（规则表 + 独立 `rules_version` + 排除标签筛选）、兼容层 11 种条件校验 + version 5.1.0（30/30）、跳转函数 `rules-cache.js` 接入（redirect 40/40）；**关键设计**：规则写操作只 bump `rules_version`，`link_version` 恒不动（线上复验 31→55 vs 恒 101）；计划里的代码块全部先实跑再落地，抓出 4 处真 bug（含两处 forward_query 断言错误）
 | 2026-11-11 | I8 收尾批次完成并验收：迁移 0015–0017 应用 + 断言（备份表已建）、cron job 10 `rxlink-expired`；跳转函数 R1/R2/R3/R8（404 HTML / 追踪像素 / robots.txt / 追踪开关，单测 40/40）与兼容层 R4/R6/R7（shorten / 访问导出 / key 过期，单测 15/15）上线；compat 部署改单文件构建包（`scripts/build-compat-function.mjs`，消除多文件歧义）；线上 R1–R8 全通、测试数据已清；git `2437179`；归档 `docs/verification/i8-results.md` |
+| 2026-11-12 | I10 验收：R10 标题自动解析上线。迁移 0020（`short_url.title_was_auto_resolved` + 重建 `create_short_url` 13→14 参 / `update_short_url` 3→4 参 + 权限收口重做）；新建 `title-resolver.ts`（标题/charset/转码/实体/截断纯函数 + SSRF 地址判定 + 抓取主流程）；兼容层接线（建链未填标题才抓、编辑抓到的标题走独立 `p_auto_title`、`AUTO_RESOLVE_TITLES` 开关默认开）；**实测 Edge Function 可出公网**（本轮最大未知项解除）；线上验证：抓标题成功、`169.254.169.254`/`localhost:5432` 被 SSRF 拦截（建链成功但无标题）、改长链标题刷新、手填标题粘性、开关关/开往返、延迟 p50 0.45s；117 例全绿；**顺带修掉构建脚本不内联本地 import 的部署级缺陷**（部署包会引用不存在的模块）；顺带修正设计稿 §4.6 关于 `link_version` 的错误断言（Postgres `UPDATE OF` 按 SET 列表判定 → 任何 PATCH 都 bump，属 0008 起既有行为） |

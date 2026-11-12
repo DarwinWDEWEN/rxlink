@@ -200,6 +200,45 @@ SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli deploy compat \
 - 迁移文件是**已应用历史**，不改不删；新变更写新编号文件，逐条 `supabase db query` 执行（或控制台 SQL Editor）。
 - 回滚靠新迁移补偿（如重新 `enabled=true`、补列），不做破坏性 down。
 
+### 5.6 标题自动解析（I10 / R10）
+
+建链时若**未填标题**，兼容层会自动抓目标页 `<title>` 写进 `short_url.title`。
+
+| 项 | 值 |
+|---|---|
+| 开关 | 环境变量 `AUTO_RESOLVE_TITLES`（未设置 = 开启；`false`/`0`/`off`/`no` = 关闭） |
+| 超时 | 3s（整条重定向链共用一个 3s 预算） |
+| 重定向 | 最多 15 跳，**每跳重新做 SSRF 校验** |
+| 来源列 | `short_url.title_was_auto_resolved`（true = 自动抓的，false = 手填） |
+| 降级 | 抓不到 / 被 SSRF 拦截 / 非 text/html / charset 认不出 → **一律留空，不报错** |
+
+**语义（对齐上游 shlink）**：手填标题是**粘性**的 —— 编辑时只有「自动解析来的」标题才会被刷新；
+用户手填过的标题，改长链也不会被覆盖。
+
+**开关的运维事实**：Edge Function 的 secret **必须重新部署才会注入**，
+只 `secrets set` 不部署，开关不生效。语法是 `NAME=VALUE`。
+
+```bash
+# 关闭自动解析（出网异常时止血）
+SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli secrets set AUTO_RESOLVE_TITLES=false
+SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli deploy compat \
+  -d supabase/functions/compat/dist --no-verify-jwt     # ← 必须重新部署
+
+# 恢复默认（取消 secret 后同样要重新部署）
+SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli secrets unset AUTO_RESOLVE_TITLES
+SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli deploy compat \
+  -d supabase/functions/compat/dist --no-verify-jwt
+```
+
+**排查**：
+
+- 建链没有标题 → 先看目标页是不是 `text/html`、有没有声明 charset（**认不出 charset 会故意丢弃标题**，防乱码入库）
+- 目标页在内网地址 → 会被 SSRF 拦截（这是预期行为，建链照常成功、只是没标题）
+- 想看抓取失败的原因 → 兼容层日志里有「原因码 + host」（`code=blocked_address host=example.com`），
+  **没有完整 URL**（长链 query 可能带 token）
+- 部署后行为没变 → 确认 `scripts/build-compat-function.mjs` 跑过；部署包是**单文件**，
+  本地模块由构建脚本内联进去（`dist/index.ts` 里 `import` 行数应为 0）
+
 ## 6. 三类故障排查树
 
 ### A. 短链打不开（404 / 500 / 不跳转）

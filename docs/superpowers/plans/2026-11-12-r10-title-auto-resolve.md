@@ -49,6 +49,7 @@
 | `supabase/functions/compat/test/title-resolver.test.ts` | 上述模块的单测（纯逻辑 / SSRF / 抓取） | 新建 |
 | `supabase/functions/compat/handler.ts` | 建链与编辑的编排（何时抓、抓到的标题往哪传）+ 导出可注入的 `titleResolverDeps` | 修改 |
 | `supabase/functions/compat/test/compat.test.ts` | fetch mock 按 URL 分流（`/rpc/` vs 外部）+ R10 集成用例 | 修改 |
+| `scripts/build-compat-function.mjs` | 部署包是单文件 → 本地相对 import 必须**内联**（含顶层重名硬失败） | 修改 |
 | `docs/verification/r10-results.md` | 验收记录 | 新建 |
 | `docs/runbook.md` | 标题自动解析操作段 + 迁移清单 | 修改 |
 | `docs/iteration-plan.md` | I10 章节 + B10 清单 + C 表 + 变更记录 | 修改 |
@@ -2394,3 +2395,29 @@ Task 2 纯逻辑
 ## 附录 B：与设计稿的差异
 
 - 设计稿 §13 列的是 T1–T5 五个任务；本计划把原 T3「抓取与 SSRF」拆成 **Task 3（SSRF 判定）** 与 **Task 4（抓取主流程）**，因为二者的评审边界不同（一个是纯函数判定，一个是 I/O 流程）。设计稿 §13 的任务表需同步更新为 6 个任务。
+
+## 附录 C：执行期发现并已修复的问题
+
+### C.1 构建脚本不内联本地 import（会让部署直接失败）
+
+**现象**：`handler.ts` 开始 `import { resolveTitle } from './title-resolver.ts'` 后，
+`scripts/build-compat-function.mjs` 生成的 `dist/index.ts` 里保留了这条 import，
+但 `title-resolver.ts` **不在部署包里**（部署包只有 `dist/index.ts` 一个文件）
+→ 部署后运行时加载模块失败。
+
+**根因**：R10 之前 `handler.ts` 完全没有 import（自包含），「单文件部署包」这个约定成立；
+新增模块后该前提被打破，而构建脚本只做复制、不做依赖处理。
+
+**修复**：`scripts/build-compat-function.mjs` 改为按依赖顺序**内联**本地相对 import，并加两层保护：
+
+- 顶层声明重名 → 构建中止（内联后同名会互相覆盖）
+- 出现非相对 import（npm 包 / `node:` 内置）→ 构建中止（无法内联）
+
+**验证**：产物 `import` 行数为 0、`deno check` 干净、起真实进程冒烟
+（`/rest/v3/health` 200、无 key 401）。
+
+### C.2 IPv6 方括号没下沉到解析层
+
+`isIpLiteral('[::1]')` 起初返回 false —— 方括号剥离只做在 `assertPublicHost` 里。
+URL 的 `hostname` 对 IPv6 字面量就是 `[::1]` 这种带括号的形式，
+把剥离下沉到 `parseIpv6` 里更稳（且 `isBlockedAddress('[::1]')` 也随之正确）。
