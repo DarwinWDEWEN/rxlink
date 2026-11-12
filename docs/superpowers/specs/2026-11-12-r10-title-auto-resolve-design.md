@@ -177,14 +177,23 @@ end;
 $$;
 ```
 
-### 4.6 `link_version` 触发器不受影响
+### 4.6 `link_version` 触发器：R10 不改变其触发与否
 
 `0007_link_version_row_trigger.sql` 的触发器用 `update of` 列清单：
 `short_code, domain_id, long_url, forward_query, enabled, valid_since, valid_until, max_visits` ——
-**不含 `title`**。因此：
+**不含 `title`**。
 
-- 只改标题 → 不 bump `link_version`，跳转函数不会为此重拉快照 ✅
-- 改长链（顺带刷新标题）→ `long_url` 在清单里 → 正常 bump ✅
+**Postgres 语义**：`UPDATE OF col` 触发器按 **SET 列表**判定，**不看值是否真的变化**。
+实测（2026-11-12 线上）：手写 `update short_url set title = title where ...` → `link_version` **不前进**（119 → 119）。
+
+但 `update_short_url` 的 SET 列表**永远**包含 `long_url` / `forward_query` / `valid_since` /
+`valid_until` / `max_visits`（用 CASE 表达式保留旧值），其中多个在触发器清单里 →
+**任何一次 `update_short_url` 调用都会 bump `link_version`**。
+
+> 这是**既有行为**：0008 的旧函数 SET 列表形状完全相同，R10 只是多加了一列
+> `title_was_auto_resolved`，**不改变触发与否**。线上实测：只改标题时 seq 117 → 118。
+
+影响：**无正确性问题**，只是每次 PATCH 都会让 FC 实例重拉一次全量短链快照（原本就如此）。
 
 ### 4.7 迁移期间旧调用点继续可用
 

@@ -515,7 +515,17 @@ supabase db query --db-url "$SUPABASE_DB_URL" "select update_short_url(p_code =>
 supabase db query --db-url "$SUPABASE_DB_URL" "select seq from link_version where id = 1"
 ```
 
-Expected: 两次 `seq` **相同**（`title` 不在 `link_version_after_write` 触发器的 `update of` 列清单里）。
+Expected: 两次 `seq` **相差 1**。
+
+> **实测结论（2026-11-12 线上）**：Postgres 的 `UPDATE OF col` 触发器按 **SET 列表**判定，
+> **不看值是否真的变化**。`update_short_url` 的 SET 列表永远包含 `forward_query` /
+> `valid_since` / `valid_until` / `max_visits`（用 CASE 保留旧值），这些列都在触发器清单里
+> → **任何一次 `update_short_url` 调用都会 bump `link_version`**。
+>
+> 这是 **0008 起的既有行为**，R10 只是多加一列 `title_was_auto_resolved`，不改变触发与否。
+> 对照实验：手写 `update short_url set title = title where ...` → seq **不前进**（触发器清单不含 title）。
+>
+> 影响：无正确性问题，只是每次 PATCH 都会让 FC 实例重拉一次全量短链快照（原本就如此）。
 
 - [ ] **Step 7: 清理测试数据**
 
