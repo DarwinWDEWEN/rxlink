@@ -34,7 +34,7 @@
 | 控制台版本旋钮 | `4.0.0` → `5.1.0` | 露出全部条件类型（含桌面设备类型扩展） |
 | 排除标签筛选 | 补齐后端 `list_short_urls` | 版本旋钮会连带打开该 UI，不补就是静默错误 |
 | geo 覆盖范围 | 仅中国 31 省级 | 热路径不引入 121MB mmdb；DB-IP mmdb 里 CN 有 120,141 个 IPv4 网段、31 个省名 |
-| geo 数据落地 | 构建期抽取为紧凑表，随包发布（**实测 ~135KB**） | 不必再挂 Layer（52MB mmdb 才需要 Layer） |
+| geo 数据落地 | 构建期抽取为紧凑表，随包发布（**实测 197KB**） | 不必再挂 Layer（52MB mmdb 才需要 Layer） |
 | 求值位置 | 跳转函数（FC）求值 | UA / language / geo 无法在 SQL 里求值 |
 | 规则下发方式 | 规则**不**进主快照，单独缓存通道 | 规则是高频写操作，共用 `link_version` 会让每次保存都触发全网实例重拉全量快照 |
 | 失效机制 | 新表 `rules_version` + `bump_rules_version()`，与 `link_version` 平行 | 「改归改、bump 归 bump」：规则改动只让规则缓存失效，短链改动只让主快照失效 |
@@ -266,7 +266,7 @@ for each row execute function bump_rules_version();
 | `fc/redirect/rules.js` | 条件求值（纯函数） | 无 |
 | `fc/redirect/china-geo.js` | IP → 省名（纯函数） | 无（读 `china-geo.bin`） |
 | `fc/redirect/rules-cache.js` | 规则快照缓存（独立 seq 通道） | 无 |
-| `fc/redirect/china-geo.bin` | 中国网段数据（构建产物，实测 ~135KB） | — |
+| `fc/redirect/china-geo.bin` | 中国网段数据（构建产物，实测 197KB） | — |
 | `scripts/build-china-geo.mjs` | 从 DB-IP mmdb 抽取中国网段 → `china-geo.bin` | `fc/geo-enrich/node_modules/mmdb-lib` |
 
 ### 6.2 `rules.js` 求值口径（对齐 shlink `RedirectCondition::matchesRequest`）
@@ -302,7 +302,7 @@ for each row execute function bump_rules_version();
 | 前缀边界点 | 125,327 个 |
 | **归并后的扁平不重叠区间** | **22,337 个** |
 | 省名 | 31 个（DB-IP 的 subdivision **只有英文名**，无 `zh-CN`） |
-| 二进制文件体积 | **约 135KB**（区间 6 字节 × 22,337 + 省名表） |
+| 二进制文件体积 | **197KB / 201,523 字节**（区间 9 字节 × 22,337 + 省名表） |
 
 **为什么必须做最长前缀归并**：MMDB 树里同一个数据指针会被多个前缀共享（同一省份既有 /16 也有 /24 的条目），且前缀之间存在嵌套。直接按 start 排序取「最后一条 start ≤ v」会错配约 **0.66%** 的 IP。必须按 **最长前缀优先（LPM）** 解析，与 `reader.get()` 语义一致。
 
@@ -324,7 +324,7 @@ for each row execute function bump_rules_version();
   intervalCount uint32 LE 区间数量
 省名表（provCount 条）：
   enLen uint8, en bytes(UTF-8), zhLen uint8, zh bytes(UTF-8)
-区间表（intervalCount 条，按 start 升序，每条 6 字节）：
+区间表（intervalCount 条，按 start 升序，每条 9 字节）：
   start  uint32 BE
   end    uint32 BE
   provId uint8
@@ -332,7 +332,7 @@ for each row execute function bump_rules_version();
 
 **中文省名来源**：DB-IP 的 subdivision 只有英文名，所以构建脚本内置一份 **31 条 EN→中文映射表**（`Beijing→北京` … `Inner Mongolia→内蒙古`、`Tibet→西藏`），中英文都写进二进制文件。
 
-**运行时查表**：一次性读入 `Buffer`（约 135KB），二分查找最后一个 `start ≤ v` 的区间 → 检查 `v ≤ end` → 返回 `{province, provinceZh}`。命中即返回，约 15 次比较。
+**运行时查表**：一次性读入 `Buffer`（约 200KB），二分查找最后一个 `start ≤ v` 的区间 → 检查 `v ≤ end` → 返回 `{province, provinceZh}`。命中即返回，约 15 次比较。
 
 **匹配归一**：省名比较时两侧都做「小写 + 去空格」处理，`Guangdong` 与 `广东` 都能匹配同一省。
 
@@ -470,7 +470,7 @@ for each row execute function bump_rules_version();
 6. **省名只有中英两种**：DB-IP subdivision 只有英文名，中文名来自构建脚本内置的 31 条映射表；若 DB-IP 改用别的省名写法，映射表需要同步更新（否则该省只能用英文名匹配）。
 7. **`language` 只取 q ≥ 0.9**：与 shlink `acceptLanguageToLocales(minQuality: 0.9)` 一致，但 Accept-Language 解析是自己实现的，与 shlink 的完整实现可能有细微差别。
 8. **版本旋钮提到 5.1.0 的连带影响**：控制台会打开 `filterShortUrlsByDomain`（4.3.0）、`filterVisitsByDomain`（4.6.0）、`filterShortUrlsByExcludedTags`（4.6.0）等更高版本功能。已核对：`filterShortUrlsByDomain` 走 `p_domain`（我们已支持）；`filterVisitsByDomain` 在控制台侧按域名分组、不新增后端参数；**唯一确实缺失的是 `excludeTags`，已由 0019 补齐**。这条结论基于对 `shlink-web-client/node_modules/@shlinkio/shlink-web-component/dist/index.js` 的版本门控点核对，属于「已核对但需上线后逐页复验」，上线后若发现新的 4xx 再补。
-9. **geo 数据构建耗时约 70 秒**：遍历 mmdb 全树（1428 万节点）才能抽出 CN 区间。构建期一次性成本，不影响运行时（运行时只读 135KB 二进制）。
+9. **geo 数据构建耗时约 50 秒**：遍历 mmdb 全树（1428 万节点）才能抽出 CN 区间。构建期一次性成本，不影响运行时（运行时只读约 200KB 二进制）。
 
 ---
 
