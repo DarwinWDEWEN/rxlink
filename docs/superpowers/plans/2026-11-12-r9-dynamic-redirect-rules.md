@@ -1772,7 +1772,7 @@ begin
   v_order := case lower(coalesce(p_order_field, 'dateCreated'))
                when 'shortcode'    then 's.short_code'
                when 'longurl'      then 's.long_url'
-               when 'title'        then 'coalesce(s.title, ''''
+               when 'title'        then 'coalesce(s.title, '''')'
                when 'visits'       then 's.visits_count'
                when 'nonbotvisits' then 'coalesce(nb.nonbots, 0)'
                else 's.created_at'
