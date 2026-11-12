@@ -1912,7 +1912,18 @@ git commit -m "feat(I9): 迁移 0019 —— list_short_urls 支持排除标签�
 
 ### Step 1: 写失败测试
 
-在 `supabase/functions/compat/test/compat.test.ts` **末尾追加**：
+**(0) 先改一条既有断言**——`supabase/functions/compat/test/compat.test.ts` 里已有的 `health 免鉴权返回 pass` 用例断言了旧版本号，版本旋钮一改它就会挂：
+
+```ts
+// 改前
+assertEquals(body, { status: 'pass', version: '4.0.0' });
+// 改后
+assertEquals(body, { status: 'pass', version: '5.1.0' });
+```
+
+> 不改这条，Task 5 Step 4 的「全部 PASS」就不可能达到。
+
+**然后在文件末尾追加** I9 用例：
 
 ```ts
 // ---- I9：R9 动态跳转规则 ----
