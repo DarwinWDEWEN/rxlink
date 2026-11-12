@@ -129,3 +129,185 @@ export function truncateTitle(text: string, max: number = MAX_TITLE_LENGTH): str
   const chars = Array.from(text);
   return chars.length > max ? chars.slice(0, max).join('') : text;
 }
+
+// ---------------------------------------------------------------------------
+// 失败原因码
+//
+// 只允许在日志里出现这些码 + host，绝不能出现完整 URL（长链 query 可能带 token）。
+// ---------------------------------------------------------------------------
+
+export type TitleResolveReason =
+  | 'unsupported_scheme'
+  | 'credentials_in_url'
+  | 'missing_host'
+  | 'blocked_address'
+  | 'dns_failed'
+  | 'request_failed'
+  | 'timeout'
+  | 'redirect_limit'
+  | 'not_html'
+  | 'no_charset'
+  | 'no_title'
+  | 'unknown_charset';
+
+class ResolveError extends Error {
+  constructor(readonly code: TitleResolveReason) {
+    super(code);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SSRF：IP 判定（fail-closed）
+// ---------------------------------------------------------------------------
+
+function parseIpv4(raw: string): number[] | null {
+  const parts = raw.trim().split('.');
+  if (parts.length !== 4) return null;
+  const out: number[] = [];
+  for (const p of parts) {
+    if (!/^\d{1,3}$/.test(p)) return null;
+    const n = Number(p);
+    if (n > 255) return null;
+    out.push(n);
+  }
+  return out;
+}
+
+function ipv4ToNumber(v: number[]): number {
+  return ((v[0]! << 24) >>> 0) + (v[1]! << 16) + (v[2]! << 8) + v[3]!;
+}
+
+// 禁止网段：[起始, 结束]
+const BLOCKED_V4: Array<[number, number]> = [
+  [0x00000000, 0x00ffffff], // 0.0.0.0/8      「本网络」
+  [0x0a000000, 0x0affffff], // 10.0.0.0/8     私有
+  [0x64400000, 0x647fffff], // 100.64.0.0/10  CGNAT
+  [0x7f000000, 0x7fffffff], // 127.0.0.0/8   环回
+  [0xa9fe0000, 0xa9feffff], // 169.254.0.0/16 链路本地（含云元数据 169.254.169.254）
+  [0xac100000, 0xac1fffff], // 172.16.0.0/12 私有
+  [0xc0000000, 0xc00000ff], // 192.0.0.0/24  IETF 协议赋值
+  [0xc0a80000, 0xc0a8ffff], // 192.168.0.0/16 私有
+  [0xc6120000, 0xc613ffff], // 198.18.0.0/15 基准测试
+  [0xe0000000, 0xefffffff], // 224.0.0.0/4   组播
+  [0xf0000000, 0xffffffff], // 240.0.0.0/4   保留（含 255.255.255.255）
+];
+
+function isBlockedIpv4(v: number[]): boolean {
+  const n = ipv4ToNumber(v);
+  return BLOCKED_V4.some(([lo, hi]) => n >= lo && n <= hi);
+}
+
+function parseHextet(raw: string): number | null {
+  if (!/^[0-9a-fA-F]{1,4}$/.test(raw)) return null;
+  return parseInt(raw, 16);
+}
+
+function parseIpv6(raw: string): number[] | null {
+  let s = raw.trim();
+  // URL 的 hostname 对 IPv6 字面量是带方括号的形式（[::1]）→ 在解析层剥掉
+  if (s.startsWith('[') && s.endsWith(']')) s = s.slice(1, -1);
+  s = s.split('%')[0]!.toLowerCase();
+  if (!s.includes(':')) return null;
+  // 内嵌 IPv4（::ffff:1.2.3.4 / 64:ff9b::1.2.3.4 形态）
+  if (s.includes('.')) {
+    const cut = s.lastIndexOf(':');
+    const v4 = parseIpv4(s.slice(cut + 1));
+    if (!v4) return null;
+    s = `${s.slice(0, cut + 1)}${ipv4ToNumber(v4).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const toGroups = (part: string[]): number[] | null => {
+    const out: number[] = [];
+    for (const h of part) {
+      const n = parseHextet(h);
+      if (n === null) return null;
+      out.push(n);
+    }
+    return out;
+  };
+  const head = toGroups(halves[0] ? halves[0]!.split(':') : []);
+  const tail = halves.length === 2 ? toGroups(halves[1] ? halves[1]!.split(':') : []) : [];
+  if (!head || !tail) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  const missing = 8 - head.length - tail.length;
+  if (missing < 1) return null; // '::' 至少压缩一个 0 组
+  return [...head, ...new Array<number>(missing).fill(0), ...tail];
+}
+
+function isBlockedIpv6(g: number[]): boolean {
+  const firstZero = (n: number) => g.slice(0, n).every((x) => x === 0);
+  const v4FromLast32 = () => [g[6]! >> 8, g[6]! & 255, g[7]! >> 8, g[7]! & 255];
+  if (g.every((x) => x === 0)) return true; // ::
+  if (firstZero(6) && g[7] === 1) return true; // ::1
+  const first = g[0]!;
+  if (first >= 0xfc00 && first <= 0xfdff) return true; // fc00::/7  ULA
+  if (first >= 0xfe80 && first <= 0xfebf) return true; // fe80::/10 链路本地
+  if (first >= 0xff00) return true; // ff00::/8  组播
+  if (firstZero(5) && g[5] === 0xffff) return isBlockedIpv4(v4FromLast32()); // ::ffff:x.x.x.x
+  if (
+    g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0
+  ) {
+    return isBlockedIpv4(v4FromLast32()); // 64:ff9b::/96  NAT64
+  }
+  if (first === 0x2002) {
+    // 2002::/16  6to4：内嵌 IPv4 在第 2、3 组
+    return isBlockedIpv4([g[1]! >> 8, g[1]! & 255, g[2]! >> 8, g[2]! & 255]);
+  }
+  if (first === 0x2001 && g[1] === 0x0000) {
+    // 2001::/32  Teredo：末 32 位是取反后的 IPv4
+    const obf = v4FromLast32();
+    return isBlockedIpv4([255 - obf[0]!, 255 - obf[1]!, 255 - obf[2]!, 255 - obf[3]!]);
+  }
+  return false;
+}
+
+export function isBlockedAddress(raw: string): boolean {
+  const ip = raw.trim();
+  if (!ip) return true; // 空地址 → fail closed
+  const v4 = parseIpv4(ip);
+  if (v4) return isBlockedIpv4(v4);
+  const v6 = parseIpv6(ip);
+  if (!v6) return true; // 认不出来 → fail closed
+  return isBlockedIpv6(v6);
+}
+
+export function isIpLiteral(raw: string): boolean {
+  const ip = raw.trim();
+  return parseIpv4(ip) !== null || parseIpv6(ip) !== null;
+}
+
+// ---------------------------------------------------------------------------
+// SSRF：主机校验
+// ---------------------------------------------------------------------------
+
+export type ResolveDns = (host: string) => Promise<string[]>;
+
+export async function defaultResolveDns(host: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const family of ['A', 'AAAA'] as const) {
+    try {
+      out.push(...await Deno.resolveDns(host, family));
+    } catch {
+      // A 解析失败不代表 AAAA 也失败，继续试下一个
+    }
+  }
+  return out;
+}
+
+export async function assertPublicHost(hostname: string, resolveDns: ResolveDns): Promise<void> {
+  const host = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname;
+  if (!host) throw new ResolveError('missing_host');
+  if (isIpLiteral(host)) {
+    if (isBlockedAddress(host)) throw new ResolveError('blocked_address');
+    return;
+  }
+  const addresses = await resolveDns(host);
+  if (!addresses.length) throw new ResolveError('dns_failed');
+  // 全部解析结果都要检查：任一落在禁止网段就整体拒绝
+  for (const addr of addresses) {
+    if (isBlockedAddress(addr)) throw new ResolveError('blocked_address');
+  }
+}
