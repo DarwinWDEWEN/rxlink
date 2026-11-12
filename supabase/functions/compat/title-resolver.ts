@@ -311,3 +311,137 @@ export async function assertPublicHost(hostname: string, resolveDns: ResolveDns)
     if (isBlockedAddress(addr)) throw new ResolveError('blocked_address');
   }
 }
+
+// ---------------------------------------------------------------------------
+// 抓取主流程
+// ---------------------------------------------------------------------------
+
+export type TitleResolverDeps = {
+  fetchImpl?: typeof fetch;
+  resolveDns?: ResolveDns;
+  timeoutMs?: number;
+  maxRedirects?: number;
+  // 失败原因回调：只应收到「原因码 + host」，绝不能收到完整 URL
+  log?: (message: string) => void;
+};
+
+function parseTargetUrl(raw: string): URL {
+  const url = new URL(raw);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new ResolveError('unsupported_scheme');
+  }
+  if (url.username || url.password) throw new ResolveError('credentials_in_url');
+  if (!url.hostname) throw new ResolveError('missing_host');
+  return url;
+}
+
+// 日志里只允许出现 host（不含 query、不含凭据）
+function safeHost(raw: string): string {
+  try {
+    return new URL(raw).hostname || '(empty)';
+  } catch {
+    return '(invalid)';
+  }
+}
+
+// latin1 是 1 字节 1 字符的映射 → 字符下标 == 字节下标，方便按字节切标题
+const LATIN1 = new TextDecoder('latin1');
+
+function concatBytes(chunks: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+
+type Collected = { bytes: Uint8Array; text: string; charset: string | null };
+
+async function collectBody(res: Response, contentType: string, cap: number): Promise<Collected> {
+  const reader = res.body?.getReader();
+  if (!reader) return { bytes: new Uint8Array(0), text: '', charset: null };
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let text = '';
+  let charset = charsetFromContentType(contentType);
+  try {
+    for (;;) {
+      // 标题与 charset 都拿到就可以停（对齐上游 STREAM：读到 </title> 即止）
+      if (findTitleSpan(text) && charset) break;
+      if (total >= cap) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.length === 0) continue;
+      chunks.push(value);
+      total += value.length;
+      text = LATIN1.decode(concatBytes(chunks, total));
+      if (!charset) charset = charsetFromMeta(text);
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // 已经读完时 cancel 会抛，忽略
+    }
+  }
+  return { bytes: concatBytes(chunks, total), text, charset };
+}
+
+async function readTitleFromResponse(res: Response): Promise<string> {
+  const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
+  if (!contentType.startsWith('text/html')) throw new ResolveError('not_html');
+  const collected = await collectBody(res, contentType, MAX_BODY_BYTES);
+  const span = findTitleSpan(collected.text);
+  if (!span) throw new ResolveError('no_title');
+  const charset = collected.charset;
+  if (!charset) throw new ResolveError('no_charset'); // 认不出 charset → 丢弃（上游同）
+  const raw = decodeWithCharset(collected.bytes.slice(span.start, span.end), charset);
+  if (!raw) throw new ResolveError('unknown_charset');
+  return truncateTitle(decodeHtmlEntities(phpTrim(raw)));
+}
+
+export async function resolveTitle(rawUrl: string, deps: TitleResolverDeps = {}): Promise<string | null> {
+  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const resolveDns = deps.resolveDns ?? defaultResolveDns;
+  const timeoutMs = deps.timeoutMs ?? FETCH_TIMEOUT_MS;
+  const maxRedirects = deps.maxRedirects ?? MAX_REDIRECTS;
+  const log = deps.log ?? (() => {});
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const host = safeHost(rawUrl);
+  try {
+    let url = parseTargetUrl(rawUrl);
+    for (let hop = 0; hop <= maxRedirects; hop++) {
+      // 每一跳都要重新校验（含重定向目标）
+      await assertPublicHost(url.hostname, resolveDns);
+      const res = await fetchImpl(url.toString(), {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: {
+          'user-agent': CHROME_USER_AGENT,
+          accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+        },
+      });
+      const location = res.headers.get('location');
+      if (res.status >= 300 && res.status < 400 && location) {
+        if (hop === maxRedirects) throw new ResolveError('redirect_limit');
+        url = parseTargetUrl(new URL(location, url).toString());
+        continue;
+      }
+      return await readTitleFromResponse(res);
+    }
+    throw new ResolveError('redirect_limit');
+  } catch (err) {
+    const code = err instanceof ResolveError
+      ? err.code
+      : (controller.signal.aborted ? 'timeout' : 'request_failed');
+    // 只记原因码 + host：绝不记完整 URL（长链 query 可能带 token）
+    log(`title-resolve failed code=${code} host=${host}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
