@@ -108,7 +108,13 @@ drop function if exists create_short_url(
 );
 ```
 
-函数体从 `0005_shorten_and_resolve.sql:61-192` **逐字复制**，仅两处 insert 语句增加 `title_was_auto_resolved` 列与取值。
+函数体从 `0005_shorten_and_resolve.sql:61-189` **逐字复制**，仅两处 insert 语句增加 `title_was_auto_resolved` 列与取值。
+
+插入值用兜底表达式，防止出现「无标题却被标记为自动解析」的非法状态（上游 `withResolvedTitle()` 保证标题与标志同时成立，我们同样守住）：
+
+```sql
+case when p_title is null then false else coalesce(p_title_was_auto_resolved, false) end
+```
 
 ### 4.3 `update_short_url`：3 参 → 4 参
 
@@ -179,6 +185,17 @@ $$;
 
 - 只改标题 → 不 bump `link_version`，跳转函数不会为此重拉快照 ✅
 - 改长链（顺带刷新标题）→ `long_url` 在清单里 → 正常 bump ✅
+
+### 4.7 迁移期间旧调用点继续可用
+
+新参数都带默认值，因此**旧签名被 DROP、新签名建好后，已部署的兼容层不会中断**：
+
+- 兼容层调 `create_short_url` 传 13 个命名参数 → Postgres 匹配新的 14 参函数 → 第 14 参取默认 `false`
+- 兼容层调 `update_short_url` 传 3 个命名参数 → Postgres 匹配新的 4 参函数 → 第 4 参取默认 `null`
+
+因此部署顺序上**迁移先行、兼容层后发**是安全的；反向（先发新代码后迁移）则会因函数不存在而报错。
+
+> 若同时保留新旧两个签名则会出现重载歧义，故必须 `drop function if exists` 旧签名后再建新签名。
 
 ---
 
@@ -278,8 +295,9 @@ export async function resolveTitle(url: string, deps?: TitleResolverDeps): Promi
 
 JS 无内置等价物，本设计自实现：
 
-- 命名实体：核心 5 个（`&amp; &lt; &gt; &quot; &apos;`）+ 常见标点/符号实体（`&nbsp; &copy; &reg; &hellip; &mdash; &ndash; &laquo; &raquo; &ldquo; &rdquo; &lsquo; &rsquo; &bull; &middot; &deg; &plusmn; &times; &divide; &euro; &pound; &yen; &cent; &sect; &para; &trade;` 等）
-- 数字实体：`&#NN;` 与 `&#xHH;`
+- 命名实体：HTML401 集里的核心 4 个（`&amp; &lt; &gt; &quot;`）+ 常见标点/符号实体（`&nbsp; &copy; &reg; &hellip; &mdash; &ndash; &laquo; &raquo; &ldquo; &rdquo; &lsquo; &rsquo; &bull; &middot; &deg; &plusmn; &times; &divide; &euro; &pound; &yen; &cent; &sect; &para; &trade;` 等）
+- 数字实体：`&#NN;` 与 `&#xHH;` —— **数字实体无条件解码**（与 PHP 一致，flags 只约束命名实体）
+- `&apos;` **不解码** —— 它不属于 HTML401 实体集（上游同样不解码）
 - `double_encode` 语义一致：`&amp;amp;` → `&amp;`（解码一次，不抑制二次编码）
 
 覆盖绝大多数场景，非与 PHP HTML401 全集（252 条）逐条一致 → 见 §9 偏差 #5。
@@ -424,14 +442,21 @@ rpc('update_short_url', { p_code: code, p_domain: domain, p_patch: patch, p_auto
 
 先改全局 fetch mock 为**分流**（`/rpc/` vs 外部 URL），再补：
 
-- 建链带 `title` → 不抓、来源 `false`
-- 建链不带 `title` → 抓成功 → 标题写入、来源 `true`
-- 建链抓失败 → 建链仍成功、标题为空、来源 `false`
-- 编辑带 `title` → 不抓、来源 `false`
-- 编辑改 `longUrl` + 原 auto → 刷新（DB 规则验证）
+**handler 层断言**（RPC 被 mock，只验参数与编排）：
+
+- 建链带 `title` → 不抓、`p_title_was_auto_resolved = false`
+- 建链不带 `title` + 抓成功 → `p_title` 为抓到的标题、`p_title_was_auto_resolved = true`
+- 建链抓失败 → 建链仍成功、`p_title = null`、`p_title_was_auto_resolved = false`
+- 编辑带 `title` → 不抓、`p_auto_title = null`
+- 编辑改 `longUrl` + 抓成功 → `p_auto_title` 为抓到的标题、且**不在 `p_patch` 里**
+- 编辑抓失败 → `p_auto_title = null`
+- `AUTO_RESOLVE_TITLES=false` → 完全不抓（不产生外部请求）
+
+**DB 规则断言**（不在 handler 层，由 T1 库级验证 + §11.3 线上验收覆盖）：
+
+- 编辑改 `longUrl` + 原 auto → 刷新
 - 编辑改 `longUrl` + 原手填 → 不动
 - 编辑抓失败 → 保留原标题与原来源
-- `AUTO_RESOLVE_TITLES=false` → 完全不抓
 
 ### 11.3 线上验收
 
@@ -514,7 +539,7 @@ rpc('update_short_url', { p_code: code, p_domain: domain, p_patch: patch, p_auto
 | 上游编辑 DTO | `shlink/module/Core/src/ShortUrl/Model/ShortUrlEdition.php` |
 | 上游写入规则 | `shlink/module/Core/src/ShortUrl/Entity/ShortUrl.php:167-178` |
 | 上游列定义 | `shlink/module/Core/config/entities-mappings/Shlinkio.Shlink.Core.ShortUrl.Entity.ShortUrl.php:120-130` |
-| rxlink 建链 RPC | `supabase/migrations/0005_shorten_and_resolve.sql:61-192` |
+| rxlink 建链 RPC | `supabase/migrations/0005_shorten_and_resolve.sql:61-189` |
 | rxlink 编辑 RPC | `supabase/migrations/0008_compat_api.sql:194-269` |
 | rxlink 权限收口范式 | `supabase/migrations/0008_compat_api.sql:313-330` |
 | rxlink 触发器 | `supabase/migrations/0007_link_version_row_trigger.sql` |
