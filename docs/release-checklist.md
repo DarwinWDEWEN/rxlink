@@ -4,7 +4,7 @@
 > 每一项都标了：**谁做**（用户 / 本机可做）、**现状**（已核实的真实状态，不是推测）、**怎么验证**、**是否阻塞发布**。
 > 整理依据：`docs/handover.md` §7.2 + `docs/iteration-plan.md` C 表 I7 的遗留项 + 本轮（I11 收尾轮）的云侧探测结果。
 >
-> **2026-11-13 更新**：`statictest` 已删；`visit_bak_0012` 已归档+还原验证+drop；控制台宿主的记录已订正；
+> **2026-11-13 更新**：`statictest` 与 Edge 副本 `console` 均已删除；`visit_bak_0012` 已归档+还原验证+drop；控制台宿主的记录已订正；
 > 补了跳转快照的冷启动判读口径和署名 grep 的正确写法。**剩余阻塞项仍只有 Supabase 升付费版。**
 
 ---
@@ -31,18 +31,20 @@
 |---|---|---|
 | `cdn.example.com` | **DNS 仍解析**到 `203.0.113.10` | 下线域名 + 解析记录（代码侧已无任何引用，纯云侧遗留） |
 | Edge 函数 `statictest` | ✅ **2026-11-13 已删除**（`functions-cli delete -s statictest` 返回 200） | 无需再动 |
-| Edge 函数 `console` | ACTIVE（Version 3） | 🟡 **重复副本，可清**（详见下方订正） |
+| Edge 函数 `console` | ✅ **2026-11-13 已删除**（`functions-cli delete -s console` → 200） | 无需再动 |
 
 > **订正（2026-11-13 实测）**：本清单上一版写「Edge 函数 `console` 是 `console.example.com` 的静态包宿主」—— **这是错的**。
 > 实测：`console.example.com` 返回的 HTML **含 DB-IP 署名**（`.rxlink-attribution` 节点），而署名只由
-> `fc/console/index.js`（FC Web 函数）注入；Edge 模板 `scripts/console-function.template.ts` **没有**这段代码。
+> `fc/console/index.js`（FC Web 函数）注入；当时的 Edge 模板**没有**这段代码。
 > 且两边提供的 asset 完全同一个（`assets/index-XmYP89Qr.js`，1,462,669 B），Edge 副本仅 6,238 B、
 > FC 副本 6,753 B（差值正是注入的署名 + 样式）。
 > ⇒ **真正托管域名的是 FC 函数**（runbook §5.2 写的 `console-prod` 是对的），Edge 函数 `console` 只是同构建的重复副本。
-> 若确认无人引用 `https://<api-host>/functions/v1/console/*` 这个路径，可删：
-> `SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli delete -s console`（删前先确认控制台没有指向它的 URL）。
+> **2026-11-13 已确认删除**（用户确认：我们统一走 FC 版本，Edge 路径无法作为入口），
+> Edge 版源码与构建链（`supabase/functions/console/`、`scripts/build-console-function.mjs`、`scripts/console-function.template.ts`）同日一并退役。
+> 删除后复验 `console.example.com` 完全不受影响：index 200 / 6,753 B / asset `index-XmYP89Qr.js` 200（1,462,669 B）/
+> `manifest.json` 200 / 署名节点仍在。
 
-> `functions-cli list` 现存 2 个函数：`compat`（ACTIVE v14）、`console`（ACTIVE v3）。
+> `functions-cli list` 现存 **1 个**函数：`compat`（ACTIVE v14）。Edge 侧静态站副本 `console` 已删，控制台由 FC 函数托管。
 
 ---
 

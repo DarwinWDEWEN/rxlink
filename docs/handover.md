@@ -52,13 +52,11 @@ rxlink/                    # 已纳入 git（基线提交 3c95212，2026-11-10�
 │  ├─ functions/
 │  │  ├─ compat/handler.ts # 兼容层逻辑（/rest/v3，23 方法 + R4/R7），导出 handleRequest
 │  │  ├─ compat/index.ts # 本地入口（薄）；部署用 scripts/build-compat-function.mjs 生成单文件 dist/index.ts
-│  │  ├─ console/        # Edge Function 形态的控制台（已被 FC 函数取代，闲置）
 │  │  └─ .env            # gitignore，凭据只在这里
 │  └─ config.toml
 ├─ scripts/
 │  ├─ new-api-key.sh     # 本地生成明文、只把 sha256 入库（明文只打印一次）
-│  ├─ build-console-fc.mjs
-│  └─ build-console-function.mjs
+│  └─ build-console-fc.mjs   # 产出 dist/console.zip（FC 函数；Edge 版构建链已于 2026-11-13 一并退役）
 ├─ dist/                 # 部署产物：redirect.zip / console.zip
 ├─ docs/                 # 见 §4 文档索引
 ├─ shlink/               # shlink 上游源码（参考用，vendor）
@@ -170,8 +168,8 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 - 🔴 **Supabase 升付费版**（免费版禁生产）—— 唯一真正阻塞发布的项。
 - 🟠 **确认 FC 定时触发器 cron 是 6 字段** `CRON_TZ=Asia/Shanghai 0 0 * * * *`（本机无法验证；5 字段写法在 FC 里是 UTC，会差 8 小时）。
 - 🟡 **云上待清理**：`cdn.example.com` 域名/解析下线（**DNS 仍解析到 203.0.113.10**）。
-- 🟡 **Edge 函数 `console`（v3）是重复副本**（2026-11-13 订正）：真正托管 `console.example.com` 的是 **FC 函数**（`fc/console/index.js` 注入 DB-IP 署名，Edge 模板 `scripts/console-function.template.ts` 没有）；两边 asset 是同一个构建。确认无人引用 `…/functions/v1/console/*` 后可 `functions-cli delete -s console`。
 - ✅ Edge 函数 `statictest`：**2026-11-13 已删除**（`functions-cli delete -s statictest` → 200）。
+- ✅ Edge 函数 `console`（v3）：**2026-11-13 已删除**（`functions-cli delete -s console` → 200）。它原是 I5 时期的静态站副本；真正托管 `console.example.com` 的是 **FC 函数**（`fc/console/index.js` 注入 DB-IP 署名；Edge 模板当时并没有这段代码，两边 asset 是同一个构建 `index-XmYP89Qr.js`）。删除后 `console.example.com` 复验全部正常。**Edge 侧现在只剩 `compat` 一个函数**，Edge 版源码与构建链（`supabase/functions/console/`、`scripts/build-console-function.mjs`、`scripts/console-function.template.ts`）同日一并退役，**控制台只有 FC 一条路**。
 - ✅ 备份表 `visit_bak_0012`：**2026-11-13 已归档 + 还原验证 + drop**。
 - Domains 红标处置已定：先接受（方案 a）。
 
