@@ -72,10 +72,10 @@ const CreateServerBase: FC<CreateServerProps> = withoutSelectedServer(({ useTime
         )}
         {hasServers && (
           <Button variant="secondary" onClick={goBack}>
-            Cancel
+            {'Cancel'}
           </Button>
         )}
-        <Button type="submit">Create server</Button>
+        <Button type="submit">{'Create server'}</Button>
       </ServerForm>
 
       {serversImported && <ImportResult variant="success" />}

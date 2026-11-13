@@ -81,7 +81,13 @@ const ImportServersBtnBase: FC<ImportServersBtnProps> = ({
         <FontAwesomeIcon icon={importIcon} widthAuto /> {children ?? 'Import from file'}
       </Button>
       <Tooltip {...tooltip}>
-        You can create servers by importing a CSV file with <b>name</b>, <b>apiKey</b> and <b>url</b> columns.
+        {'You can create servers by importing a CSV file with '}
+        <b>name</b>
+        {'、'}
+        <b>apiKey</b>
+        {' 和 '}
+        <b>url</b>
+        {' 列的 CSV 文件来创建服务器。'}
       </Tooltip>
 
       <input

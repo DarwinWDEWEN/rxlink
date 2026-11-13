@@ -30,14 +30,20 @@ export const EditServer: FC = withSelectedServer(() => {
   return (
     <NoMenuLayout>
       <ServerForm
-        title={<>Edit &quot;{selectedServer.name}&quot;</>}
+        title={
+          <>
+            {'Edit "'}
+            {selectedServer.name}
+            {'”'}
+          </>
+        }
         initialValues={selectedServer}
         onSubmit={handleSubmit}
       >
         <Button variant="secondary" onClick={goBack}>
-          Cancel
+          {'Cancel'}
         </Button>
-        <Button type="submit">Save</Button>
+        <Button type="submit">{'Save'}</Button>
       </ServerForm>
     </NoMenuLayout>
   );

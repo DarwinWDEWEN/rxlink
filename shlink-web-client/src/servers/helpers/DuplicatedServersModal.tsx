@@ -21,11 +21,11 @@ export const DuplicatedServersModal: FC<DuplicatedServersModalProps> = ({
   return (
     <CardModal
       size="lg"
-      title={`Duplicated server${hasMultipleServers ? 's' : ''}`}
+      title={hasMultipleServers ? 'Duplicated servers' : 'Duplicated server'}
       open={open}
       onClose={onClose}
       onConfirm={onConfirm}
-      confirmText={`Save duplicate${hasMultipleServers ? 's' : ''}`}
+      confirmText={hasMultipleServers ? 'Save duplicates' : 'Save duplicate'}
       cancelText={hasMultipleServers ? 'Ignore duplicates' : 'Discard'}
     >
       <p>{hasMultipleServers ? 'The next servers already exist:' : 'There is already a server with:'}</p>
@@ -34,10 +34,10 @@ export const DuplicatedServersModal: FC<DuplicatedServersModalProps> = ({
           !hasMultipleServers ? (
             <Fragment key={index}>
               <li>
-                URL: <b>{url}</b>
+                {'URL:'} <b>{url}</b>
               </li>
               <li>
-                API key: <b>{apiKey}</b>
+                {'API key:'} <b>{apiKey}</b>
               </li>
             </Fragment>
           ) : (
@@ -47,7 +47,7 @@ export const DuplicatedServersModal: FC<DuplicatedServersModalProps> = ({
           ),
         )}
       </ul>
-      <span>{hasMultipleServers ? 'Do you want to save duplicated servers' : 'Do you want to save this server'}?</span>
+      <span>{hasMultipleServers ? 'Do you want to save duplicated servers?' : 'Do you want to save this server?'}</span>
     </CardModal>
   );
 };

@@ -45,7 +45,7 @@ const ShlinkWebComponentContainerBase: FC<ShlinkWebComponentContainerProps> =
             routesPrefix={routesPrefix}
             tagColorsStorage={tagColorsStorage}
             createNotFound={(nonPrefixedHomePath: string) => (
-              <NotFound to={`${routesPrefix}${nonPrefixedHomePath}`}>List short URLs</NotFound>
+              <NotFound to={`${routesPrefix}${nonPrefixedHomePath}`}>{'List short URLs'}</NotFound>
             )}
             autoSidebarToggle={false}
           />

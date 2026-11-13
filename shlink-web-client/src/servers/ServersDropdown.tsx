@@ -15,13 +15,13 @@ export const ServersDropdown: FC = () => {
     <NavBar.Dropdown
       buttonContent={
         <span className="flex items-center gap-1.5">
-          <FontAwesomeIcon icon={serverIcon} /> Servers
+          <FontAwesomeIcon icon={serverIcon} /> {'Servers'}
         </span>
       }
     >
       {serversList.length === 0 ? (
         <Dropdown.Item to="/server/create">
-          <FontAwesomeIcon icon={plusIcon} /> Add a server
+          <FontAwesomeIcon icon={plusIcon} /> {'Add a server'}
         </Dropdown.Item>
       ) : (
         <>
@@ -32,7 +32,7 @@ export const ServersDropdown: FC = () => {
           ))}
           <Dropdown.Separator />
           <Dropdown.Item to="/manage-servers">
-            <FontAwesomeIcon icon={serverIcon} /> Manage servers
+            <FontAwesomeIcon icon={serverIcon} /> {'Manage servers'}
           </Dropdown.Item>
         </>
       )}

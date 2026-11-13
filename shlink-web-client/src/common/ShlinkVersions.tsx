@@ -24,10 +24,11 @@ export const ShlinkVersions = ({ selectedServer, clientVersion = SHLINK_WEB_CLIE
     <small className="text-gray-500">
       {isReachableServer(selectedServer) && (
         <>
-          Server: <VersionLink project="shlink" version={selectedServer.printableVersion} /> -{' '}
+          {'Server:'} <VersionLink project="shlink" version={selectedServer.printableVersion} />
+          {' - '}
         </>
       )}
-      Client: <VersionLink project="shlink-web-client" version={normalizedClientVersion} />
+      {'Client:'} <VersionLink project="shlink-web-client" version={normalizedClientVersion} />
     </small>
   );
 };

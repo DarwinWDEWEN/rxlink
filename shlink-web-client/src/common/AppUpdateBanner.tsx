@@ -28,18 +28,18 @@ export const AppUpdateBanner: FC<AppUpdateBannerProps> = ({ isOpen, onClose, for
       className={clsx('w-[700px] max-w-[calc(100%-30px)]', 'fixed top-[35px] left-[50%] translate-x-[-50%] z-[1040]')}
     >
       <Card.Header className="flex items-center justify-between">
-        <h5>This app has just been updated!</h5>
+        <h5>{'This app has just been updated!'}</h5>
         <CloseButton onClick={onClose} />
       </Card.Header>
       <Card.Body className="flex gap-4 items-center justify-between max-md:flex-col">
-        Restart it to enjoy the new features.
+        {'Restart it to enjoy the new features.'}
         <Button disabled={isUpdating} variant="secondary" solid onClick={update}>
           {!isUpdating && (
             <>
-              Restart now <FontAwesomeIcon icon={reloadIcon} />
+              {'Restart now'} <FontAwesomeIcon icon={reloadIcon} />
             </>
           )}
-          {isUpdating && <>Restarting...</>}
+          {isUpdating && <>{'Restarting...'}</>}
         </Button>
       </Card.Body>
     </Card>

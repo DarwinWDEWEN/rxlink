@@ -34,12 +34,15 @@ export const DeleteServerModal: FC<DeleteServerModalProps> = ({ server, onClose,
     >
       <div className="flex flex-col gap-y-4">
         <p>
-          Are you sure you want to remove <b>{server ? server.name : ''}</b>?
+          {'Are you sure you want to remove '}
+          <b>{server ? server.name : ''}</b>
+          {'？'}
         </p>
         <p>
           <i>
-            No data will be deleted, only the access to this server will be removed from this device. You can create it
-            again at any moment.
+            {
+              'No data will be deleted, only the access to this server will be removed from this device. You can create it again at any moment.'
+            }
           </i>
         </p>
       </div>

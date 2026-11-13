@@ -26,7 +26,7 @@ export const ManageServersRow: FC<ManageServersRowProps> = ({ server, hasAutoCon
                 {...anchor}
                 data-testid="auto-connect"
               />
-              <Tooltip {...tooltip}>Auto-connect to this server</Tooltip>
+              <Tooltip {...tooltip}>{'Auto-connect to this server'}</Tooltip>
             </>
           )}
         </Table.Cell>

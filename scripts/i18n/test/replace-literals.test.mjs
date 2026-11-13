@@ -57,10 +57,29 @@ describe('replaceLiterals', () => {
     assert.deepEqual(counts, { 'Tag ': 1 });
   });
 
-  it('单引号包裹的同内容字面量不被替换（只处理双引号）', () => {
+  it('单引号包裹的同内容字面量也被替换（仓库格式化器 oxfmt 默认单引号）', () => {
     const dict = { Save: '保存' };
     const { code, counts } = replaceLiterals("const a = 'Save';", dict);
-    assert.equal(code, "const a = 'Save';");
-    assert.deepEqual(counts, {});
+    assert.equal(code, "const a = '保存';");
+    assert.deepEqual(counts, { Save: 1 });
+  });
+
+  it('同一文案双引号与单引号各出现一次时分别计数', () => {
+    const dict = { Save: '保存' };
+    const { code, counts } = replaceLiterals(`const a = "Save"; const b = 'Save';`, dict);
+    assert.equal(code, `const a = "保存"; const b = '保存';`);
+    assert.deepEqual(counts, { Save: 2 });
+  });
+
+  it('替换后保持原引号风格', () => {
+    const dict = { Connect: '连接' };
+    const { code } = replaceLiterals(`<Icon /> {'Connect'}`, dict);
+    assert.equal(code, `<Icon /> {'连接'}`);
+  });
+
+  it('中文含单引号时用单引号风格正确转义', () => {
+    const dict = { Note: "备注'附" };
+    const { code } = replaceLiterals("const a = 'Note';", dict);
+    assert.equal(code, `const a = '备注\\'附';`);
   });
 });

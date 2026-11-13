@@ -19,15 +19,15 @@ export const ServerError: FC = () => {
           {!isServerWithId(selectedServer) && 'Could not find this Shlink server.'}
           {isServerWithId(selectedServer) && (
             <>
-              <p>Oops! Could not connect to this Shlink server.</p>
-              Make sure you have internet connection, and the server is properly configured and on-line.
+              <p>{'Oops! Could not connect to this Shlink server.'}</p>
+              {'Make sure you have internet connection, and the server is properly configured and on-line.'}
             </>
           )}
         </Message>
 
         <p className="text-xl">
-          These are the Shlink servers currently configured. Choose one of them or{' '}
-          <Link to="/server/create">add a new one</Link>.
+          {'These are the Shlink servers currently configured. Choose one of them or '}
+          <Link to="/server/create">{'add a new one'}</Link>.
         </p>
         <Card className="w-full max-w-100 overflow-hidden">
           <ServersListGroup borderless servers={Object.values(servers)} />
@@ -35,9 +35,10 @@ export const ServerError: FC = () => {
 
         {isServerWithId(selectedServer) && (
           <p className="text-xl">
-            Alternatively, if you think you may have misconfigured this server, you can{' '}
-            <DeleteServerButton server={selectedServer}>remove it</DeleteServerButton> or&nbsp;
-            <Link to={`/server/${selectedServer.id}/edit?reconnect=true`}>edit it</Link>.
+            {'Alternatively, if you think you may have misconfigured this server, you can '}
+            <DeleteServerButton server={selectedServer}>{'remove it'}</DeleteServerButton>
+            {' or '}&nbsp;
+            <Link to={`/server/${selectedServer.id}/edit?reconnect=true`}>{'edit it'}</Link>.
           </p>
         )}
       </div>

@@ -1,13 +1,15 @@
 // 扫描上游产物，统计候选 UI 文案的出现次数，产出 expected.json。
-// 上游升级后重跑本脚本即可刷新基准：node scripts/i18n/gen-expected.mjs
+// 同时扫描 shlink-web-client/src，统计字典里每条文案的出现次数，产出 expected.src.json。
+// 上游升级或 src 改动后重跑本脚本即可刷新基准：node scripts/i18n/gen-expected.mjs
 //
 // 三类候选会被自动剔除，不进入 expected.json：
 //   1) 数据值（国家名，`KEY: "Value"` 大对象）—— 由下方 objRe 识别；
 //   2) 数据值（浏览器/OS/城市名，数组形式）—— 由 KEEP_EN 列表维护；
 //   3) 逻辑 key / 内部标识 —— 由 LOGICAL_KEYS 列表维护（新上游版本如出现新的，需补进列表）。
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { replaceLiterals } from './replace-literals.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..', '..', 'shlink-web-client', 'node_modules', '@shlinkio');
@@ -69,5 +71,25 @@ const sorted = Object.fromEntries(
 );
 writeFileSync(join(here, 'expected.json'), JSON.stringify(sorted, null, 2) + '\n');
 console.log(
-  `候选 ${Object.keys(sorted).length} 条，出现 ${Object.values(sorted).reduce((a, b) => a + b, 0)} 处`,
+  `上游候选 ${Object.keys(sorted).length} 条，出现 ${Object.values(sorted).reduce((a, b) => a + b, 0)} 处`,
+);
+
+// ---- src 部分：统计字典里每条文案在 src 下的出现次数（双/单引号字面量，与插件替换口径一致）----
+const dict = JSON.parse(readFileSync(join(here, 'zh-CN.json'), 'utf8'));
+const srcDir = join(here, '..', '..', 'shlink-web-client', 'src');
+const walk = (d) =>
+  readdirSync(d, { withFileTypes: true }).flatMap((e) => {
+    const p = join(d, e.name);
+    return e.isDirectory() ? walk(p) : /\.(tsx?|jsx?)$/.test(e.name) ? [p] : [];
+  });
+const { counts: srcCounts } = replaceLiterals(
+  walk(srcDir).map((f) => readFileSync(f, 'utf8')).join('\n'),
+  dict,
+);
+const sortedSrc = Object.fromEntries(
+  Object.entries(srcCounts).sort(([a], [b]) => a.localeCompare(b)),
+);
+writeFileSync(join(here, 'expected.src.json'), JSON.stringify(sortedSrc, null, 2) + '\n');
+console.log(
+  `src 命中 ${Object.keys(sortedSrc).length} 条，出现 ${Object.values(sortedSrc).reduce((a, b) => a + b, 0)} 处`,
 );
