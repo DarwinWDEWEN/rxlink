@@ -15,3 +15,5 @@ codegraph.db
 .codegraph/
 # 另一任务的 UI 产物（21MB PNG），不入本仓库版本控制；文件保留在工作区
 design/
+# 线上数据归档（如 visit_bak_0012 的还原脚本）：含访客 IP/UA 派生数据，不入库
+.backups/

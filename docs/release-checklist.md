@@ -1,8 +1,11 @@
 # rxlink 上线前置清单（Release Checklist）
 
-> 状态：**待执行**（2026-11-12 整理）。用途：把「发布前必须做完、且本机做不了的事」集中成一份可勾选的清单。
+> 状态：**部分已执行**（2026-11-12 整理，2026-11-13 更新）。用途：把「发布前必须做完、且本机做不了的事」集中成一份可勾选的清单。
 > 每一项都标了：**谁做**（用户 / 本机可做）、**现状**（已核实的真实状态，不是推测）、**怎么验证**、**是否阻塞发布**。
 > 整理依据：`docs/handover.md` §7.2 + `docs/iteration-plan.md` C 表 I7 的遗留项 + 本轮（I11 收尾轮）的云侧探测结果。
+>
+> **2026-11-13 更新**：`statictest` 已删；`visit_bak_0012` 已归档+还原验证+drop；控制台宿主的记录已订正；
+> 补了跳转快照的冷启动判读口径和署名 grep 的正确写法。**剩余阻塞项仍只有 Supabase 升付费版。**
 
 ---
 
@@ -24,30 +27,45 @@
 
 ### 3. 云侧资源清理 —— **用户动作** · 🟡 不阻塞，但要清
 
-| 项 | 现状（2026-11-12 实测） | 动作 |
+| 项 | 现状 | 动作 |
 |---|---|---|
 | `cdn.example.com` | **DNS 仍解析**到 `203.0.113.10` | 下线域名 + 解析记录（代码侧已无任何引用，纯云侧遗留） |
-| Edge 函数 `statictest` | **状态 `DELETING`**（Version 4） | 等删除完成；若卡住需在控制台强制删 |
-| Edge 函数 `console` | ACTIVE（Version 3） | **保留** —— 这是 `console.example.com` 的静态包宿主，不是遗留 |
+| Edge 函数 `statictest` | ✅ **2026-11-13 已删除**（`functions-cli delete -s statictest` 返回 200） | 无需再动 |
+| Edge 函数 `console` | ACTIVE（Version 3） | 🟡 **重复副本，可清**（详见下方订正） |
 
-> `functions-cli list` 实测只有 3 个函数：`compat`（ACTIVE v14）、`console`（ACTIVE v3）、`statictest`（DELETING）。
-> `statictest` 是探针期遗留，删完即可。
+> **订正（2026-11-13 实测）**：本清单上一版写「Edge 函数 `console` 是 `console.example.com` 的静态包宿主」—— **这是错的**。
+> 实测：`console.example.com` 返回的 HTML **含 DB-IP 署名**（`.rxlink-attribution` 节点），而署名只由
+> `fc/console/index.js`（FC Web 函数）注入；Edge 模板 `scripts/console-function.template.ts` **没有**这段代码。
+> 且两边提供的 asset 完全同一个（`assets/index-XmYP89Qr.js`，1,462,669 B），Edge 副本仅 6,238 B、
+> FC 副本 6,753 B（差值正是注入的署名 + 样式）。
+> ⇒ **真正托管域名的是 FC 函数**（runbook §5.2 写的 `console-prod` 是对的），Edge 函数 `console` 只是同构建的重复副本。
+> 若确认无人引用 `https://<api-host>/functions/v1/console/*` 这个路径，可删：
+> `SUPABASE_API_KEY="$SUPABASE_SERVICE_ROLE_KEY" /tmp/functions-cli delete -s console`（删前先确认控制台没有指向它的 URL）。
+
+> `functions-cli list` 现存 2 个函数：`compat`（ACTIVE v14）、`console`（ACTIVE v3）。
 
 ---
 
 ## 二、发布后动作（不阻塞发布，但发布完成要做）
 
-### 4. 备份表 `visit_bak_0012` —— **本机可做** · 🟢 158 行待 drop
+### 4. 备份表 `visit_bak_0012` —— ✅ **2026-11-13 已执行**
 
-- **现状**：`visit_bak_0012` 有 **158 行**（I7 迁移 0012 前的备份；授权已收口）。
-- **动作**：发布确认无误后 `drop table visit_bak_0012;`
-- **怎么验证**：`select count(*) from visit_bak_0012;` → 报 relation does not exist。
-- **注意**：**先发布、确认线上正常，再 drop**。反了就没退路。
+- **原状**：158 行（I7 迁移 0012 前的备份；授权已收口）。
+- **已做**：先按「先备份再删」的规矩导出归档并做了**还原验证**：
+  1. 用 `supabase db query -o csv` 生成 158 条 `INSERT` → `.backups/visit_bak_0012-restore.sql`；
+  2. 建临时表 `visit_bak_0012_restore_test` 灌入 → `INSERT 0 158`；
+  3. 比对两边 `md5(string_agg(t::text,'|' order by id))` → `79c8f191d3b35bd9e140c36edf6d2b0a` **完全一致**；
+  4. `drop table visit_bak_0012_restore_test;` → `drop table visit_bak_0012;` 均 rc=0。
+- **验证**：`select count(*) from visit_bak_0012;` → `ERROR: relation "visit_bak_0012" does not exist (SQLSTATE 42P01)`；
+  `pg_class` 里 `visit_bak%` 零残留。
+- **归档位置**：`.backups/visit_bak_0012-restore.sql`（**已 gitignore** —— 含访客 IP/UA 派生数据，不入库）。
+  该表结构是迁移 0012 **之前**的旧列名（`country` / `region` / `city`），与现行 `visit` 表的
+  `country_name` / `region_name` / `city_name` 不同；还原时需按旧 DDL 建表。
+- **数据没丢**：现行 `visit` 表 990 行，最早一条 `2026-11-09 16:01:47.985+08` 与备份表最早一条同源同刻。
 
-### 5. 释放探针期残留授权 —— **本机可做** · 🟢
+### 5. 释放探针期残留授权 —— ✅ **2026-11-13 已执行**
 
-- **现状**：I6 已做探针退场（探针函数/表/Edge Function/定时任务都撤了），但备份表与其授权仍在。
-- **动作**：随第 4 项一起清。
+- I6 已做探针退场（探针函数/表/Edge Function/定时任务都撤了）；备份表与其授权随第 4 项一起清完。
 
 ---
 
@@ -79,10 +97,35 @@ curl -sS -o /dev/null -w 'robots: %{http_code}\n' https://example.com/robots.txt
 curl -sS -o /dev/null -w 'pixel:  %{http_code}\n' https://example.com/2b9yj/track
 curl -sS -o /dev/null -w '302:    %{http_code}\n' https://example.com/2b9yj
 
-# ③ 数据库健康（见 runbook §3.1）
+# ③ 跳转函数快照是否真的热起来（**要看 header，不能只看 302**）
+curl -sS -D- -o /dev/null https://example.com/2b9yj | grep -iE '^(location|x-link-snapshot|server-timing)'
+
+# ④ 控制台静态站 + DB-IP 署名（FC 函数宿主）
+curl -sS https://console.example.com/ | grep -c 'rxlink-attribution'   # 期望 1
+
+# ⑤ 数据库健康（见 runbook §3.1）
 ```
 
 **期望值**：`117 passed | 0 failed`；`deno check` 无输出；`{"status":"pass","version":"5.1.0"}`；robots/pixel 200、跳转 302。
+
+### ③ 的判读口径（别踩坑）
+
+`X-Link-Snapshot` 的格式是 `rows|seq|age`：
+
+| 观测值 | 含义 | 处置 |
+|---|---|---|
+| `1\|158\|216146` | ✅ 快照已加载（1 行、seq 158、3.6 分钟前加载），`cached=1` | 正常 |
+| `0\|null\|-1` | ⚠️ **冷启动实例**：刚部署，轮询还没完成第一轮 | **重打一次**即可，别误判成 bug |
+| `0\|null\|-1` 且**连续多次**都是 | ❌ 真的快照加载失败 | 看 FC 日志 `snapshot poll failed: ...` |
+
+> 2026-11-13 实测踩过这个坑：用户刚发布 FC 函数后打的第一发命中冷启动实例 → `0|null|-1`，
+> 连打 5 次全部 `1|158|<age>`、`cached=1`、`dur=0`。**快照机制本身没问题。**
+
+### ④ 的判读口径
+
+签名节点是 `<div class="rxlink-attribution">IP Geolocation by <a>DB-IP</a></div>`。
+注意 **`IP Geolocation by DB-IP` 这个连续字符串在 HTML 里不存在**（文字被 `<a>` 标签隔开），
+用 `grep 'IP Geolocation by DB-IP'` 会**误判为"没上线"**。正确写法是 `grep -c 'rxlink-attribution'`。
 
 ---
 

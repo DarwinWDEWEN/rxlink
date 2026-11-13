@@ -129,7 +129,7 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 - **任何函数不回显/不记录请求头**（含明文库密码与各类 access key）；`Location` 只取库里 `long_url`，请求不参与拼接。
 - 文档断言要有出处；查不到出处的计划挂账别编。
 - 破坏性 / 共享库写入需用户明确批准。
-- **0012 迁移前的备份表 `visit_bak_0012`（158 行，RLS 已 enable+force+revoke，anon 直连 401）暂留线上库**，作为列改名的回滚依据；确认新包上线后可 `drop table visit_bak_0012;` 清掉。
+- **0012 迁移前的备份表 `visit_bak_0012`（158 行）已于 2026-11-13 归档并 drop**：归档脚本在 `.backups/visit_bak_0012-restore.sql`（已 gitignore，含访客数据不入库），drop 前做过**还原验证**（临时表灌入 158 行、两边 md5 一致）。
 
 ## 7. 待办（下一个 AI 的起点）
 
@@ -159,7 +159,7 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 
 **已知限制**：DB-IP 无 `time_zone` 字段 → `visit.timezone` 恒 NULL（契约允许 null，控制台不渲染）。要时区就把 `GEO_MMDB_URL` 指向带 time_zone 的库。
 
-**署名义务**：DB-IP 要求展示结果处标注 "IP Geolocation by DB-IP"（并链接 db-ip.com）—— **已实现**：`fc/console/index.js` 在返回 HTML 时注入固定页脚 + `<style>`，不重编 Angular（7 例单测全绿）。**待他重传 `dist/console.zip` 后线上生效**（`node scripts/build-console-fc.mjs` 已重新打包）。
+**署名义务**：DB-IP 要求展示结果处标注 "IP Geolocation by DB-IP"（并链接 db-ip.com）—— **已实现并已上线**：`fc/console/index.js` 在返回 HTML 时注入固定页脚 + `<style>`，不重编 Angular（7 例单测全绿）；2026-11-13 实测 `https://console.example.com/` 的 HTML 含 `.rxlink-attribution` 节点。
 
 **月更**（DB-IP 每月初发布新版）：`node scripts/build-geoip-bundle.mjs` → `node scripts/build-geo-enrich-fc.mjs` → 重新上传 Layer。
 
@@ -169,15 +169,17 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 
 - 🔴 **Supabase 升付费版**（免费版禁生产）—— 唯一真正阻塞发布的项。
 - 🟠 **确认 FC 定时触发器 cron 是 6 字段** `CRON_TZ=Asia/Shanghai 0 0 * * * *`（本机无法验证；5 字段写法在 FC 里是 UTC，会差 8 小时）。
-- 🟡 **云上待清理**：`cdn.example.com` 域名/解析下线（**DNS 仍解析到 203.0.113.10**）；Edge 函数 `statictest` 处于 `DELETING`（等删完）。
-- 🟢 **备份表 `visit_bak_0012`**（158 行、授权已收口）保留到 #40 发布完成后再 drop。
+- 🟡 **云上待清理**：`cdn.example.com` 域名/解析下线（**DNS 仍解析到 203.0.113.10**）。
+- 🟡 **Edge 函数 `console`（v3）是重复副本**（2026-11-13 订正）：真正托管 `console.example.com` 的是 **FC 函数**（`fc/console/index.js` 注入 DB-IP 署名，Edge 模板 `scripts/console-function.template.ts` 没有）；两边 asset 是同一个构建。确认无人引用 `…/functions/v1/console/*` 后可 `functions-cli delete -s console`。
+- ✅ Edge 函数 `statictest`：**2026-11-13 已删除**（`functions-cli delete -s statictest` → 200）。
+- ✅ 备份表 `visit_bak_0012`：**2026-11-13 已归档 + 还原验证 + drop**。
 - Domains 红标处置已定：先接受（方案 a）。
 
-**已核实不需要做的**（2026-11-12 复核，避免重复查）：
+**已核实不需要做的**（2026-11-13 复核，避免重复查）：
 
-- ~~重传 `dist/console.zip`（DB-IP 署名页脚）~~ → **已上线**，线上 HTML 已含 `IP Geolocation by DB-IP`。
+- ~~重传 `dist/console.zip`（DB-IP 署名页脚）~~ → **已上线**，线上 HTML 已含 `rxlink-attribution` 节点。
 - ~~FC 账号探针残留~~ → I6 已全退场。
-- ~~闲置 `console` Edge 函数~~ → `console` 是 `console.example.com` 的静态包宿主，**要保留**；闲置的是 `statictest`。
+- ~~`statictest` 待删除~~ → 已删。
 
 ### 7.3 明确不做（YAGNI）
 
