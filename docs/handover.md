@@ -69,13 +69,15 @@ rxlink/                    # 已纳入 git（基线提交 3c95212，2026-11-10�
 
 | 文档 | 作用 |
 |---|---|
-| `iteration-plan.md` | **迭代总账**：I0–I6 切法、B0–B6 验收清单、C 进度表、变更记录 |
+| `iteration-plan.md` | **迭代总账**：I0–I11 切法、B0–B10 验收清单、C 进度表、变更记录 |
 | `tech-framework.md` | 技术框架（做成什么样）：§4 DDL、§5 链路（含 §5.4 死链、§5.5 地理富化）、§6 P0 平台事实 |
 | `shlink-migration-analysis.md` | shlink 有什么（功能全景 + §9 决策 D1–D5） |
 | `shlink-api-contract.md` | 控制台要什么字段（23 方法 / 18 路径契约） |
+| `shlink-feature-checklist.md` | **功能对照表**：REST 24 动作 + 服务端能力 + UI 页面逐条 ✅/⚠/❌（2026-11-12 订正过） |
 | `geo-enrichment.md` | **地理富化设计定稿**（0012 schema + 富化函数 + 契约改动） |
+| `release-checklist.md` | **上线前置清单**：发布阻塞项 + 云侧清理 + 发布后动作 + 最后自检脚本 |
 | `runbook.md` | 运维：拓扑、健康查询、加域名 SOP、回滚、故障树、FC 日志 |
-| `verification/` | 每轮验收证据（i1–i6、p0-results、wrap-up-results） |
+| `verification/` | 每轮验收证据（i1–i6、i8、i9、i10、p0-results、wrap-up-results） |
 | `reference/` | ADB Supabase 官方文档 + shlink SDK 3.2.1 类型原件 |
 
 ## 4. 怎么跑 / 怎么验证
@@ -163,12 +165,19 @@ curl …/functions/v1/compat/rest/v3/health # 期望 {"status":"pass","version":
 
 ### 7.2 发布前置 / 云上清理（用户动作，#40）
 
-- Supabase 升付费版（免费版禁生产）。
-- 云上待清理：`cdn.example.com` 域名/解析下线、FC 账号探针残留、闲置 `console` Edge 函数。
+> **完整清单见 `docs/release-checklist.md`**（每项带现状/动作/验证方式/是否阻塞发布）。下面只留摘要。
+
+- 🔴 **Supabase 升付费版**（免费版禁生产）—— 唯一真正阻塞发布的项。
+- 🟠 **确认 FC 定时触发器 cron 是 6 字段** `CRON_TZ=Asia/Shanghai 0 0 * * * *`（本机无法验证；5 字段写法在 FC 里是 UTC，会差 8 小时）。
+- 🟡 **云上待清理**：`cdn.example.com` 域名/解析下线（**DNS 仍解析到 203.0.113.10**）；Edge 函数 `statictest` 处于 `DELETING`（等删完）。
+- 🟢 **备份表 `visit_bak_0012`**（158 行、授权已收口）保留到 #40 发布完成后再 drop。
 - Domains 红标处置已定：先接受（方案 a）。
-- **重传 `dist/console.zip`**（DB-IP 署名页脚上线）。
-- **确认 FC 定时触发器 cron 已改成 6 字段** `CRON_TZ=Asia/Shanghai 0 0 * * * *`（本机无法验证）。
-- **备份表 `visit_bak_0012`**（158 行、授权已收口）保留到 #40 发布完成后再 drop。
+
+**已核实不需要做的**（2026-11-12 复核，避免重复查）：
+
+- ~~重传 `dist/console.zip`（DB-IP 署名页脚）~~ → **已上线**，线上 HTML 已含 `IP Geolocation by DB-IP`。
+- ~~FC 账号探针残留~~ → I6 已全退场。
+- ~~闲置 `console` Edge 函数~~ → `console` 是 `console.example.com` 的静态包宿主，**要保留**；闲置的是 `statictest`。
 
 ### 7.3 明确不做（YAGNI）
 

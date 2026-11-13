@@ -1,9 +1,10 @@
-# shlink 功能清单 vs rxlink 复刻对照（2026-11-11）
+# shlink 功能清单 vs rxlink 复刻对照（2026-11-12 订正）
 
 > **用途**：回答「shlink 有的功能，rxlink 是否都复刻了」。
 > **来源**：vendored 上游源码 `shlink/`（5.x，`UPGRADE.md` 最新段为 v4→v5）、`shlink-web-client/`（v4.9.0）+ `@shlinkio/shlink-web-component` 0.20.0 + `shlink-js-sdk` 3.2.1；rxlink 实现见 `supabase/functions/compat/handler.ts`（入口 `index.ts`）、`fc/redirect/`、`fc/console/`、`supabase/migrations/`。
 > **口径**：✅ 已实现且验收；⚠️ 部分实现 / 降级 / 只读；❌ 未实现。**Shlink Plus（付费版）不在范围内**（用户已定：先验收，付费版之后再议）。
 > **核对方法**：REST 动作逐条对 `shlink/config/autoload/routes.config.php` + 各 Action 的 `ROUTE_PATH` 常量；UI 逐条对 web-component 的路由表与 SDK 的端点清单；线上实测见文末「证据」。
+> **2026-11-12 订正**：本清单此前列在 `singleStepCreateShortUrl` / 追踪开关 / API key 过期 的 3 处 ❌ 均为**陈旧**（I8 的 R4/R8/R6 已实现，只是清单没跟着更新）。本轮逐条做了线上复核，证据见文末。
 
 ---
 
@@ -17,7 +18,7 @@
 | 4 | `getShortUrl` | GET `/short-urls/{code}` | ✅ | 含 `domain` 查询参数 |
 | 5 | `updateShortUrl` | PATCH `/short-urls/{code}` | ✅ | 整组替换标签、**改长链时刷新自动解析的标题（手填标题不被覆盖）** |
 | 6 | `deleteShortUrl` | DELETE `/short-urls/{code}` | ✅ | 软删（`enabled=false`） |
-| 7 | `singleStepCreateShortUrl` | GET `/short-urls/shorten` | ❌ | 控制台不调它（契约 §3 注）；属决策 D1 延伸，未实现 |
+| 7 | `singleStepCreateShortUrl` | GET `/short-urls/shorten` | ✅ | **I8/R4 已实现**：query 或 header 鉴权都认（shlink 唯一的 query 鉴权例外）、支持 `format=txt` 纯文本、`domain` 参数；5 条单测 |
 | 8 | `getShortUrlVisits` | GET `/short-urls/{code}/visits` | ✅ | 时间区间 / excludeBots / 分页 |
 | 9 | `deleteShortUrlVisits` | DELETE `/short-urls/{code}/visits` | ✅ | 返回 `{deletedVisits}` |
 | 10 | `getTagVisits` | GET `/tags/{tag}/visits` | ✅ | |
@@ -36,7 +37,7 @@
 | 23 | `setShortUrlRedirectRules` | POST/PATCH `/short-urls/{code}/redirect-rules` | ✅ | **I9 已实现**：11 种条件类型 + 值域校验，非法值 400 `invalid-data` |
 | 24 | `mercureInfo` | GET `/mercure-info` | ⚠️ | **404 `MERCURE_NOT_CONFIGURED`**（未配置 Mercure，界面自动降级） |
 
-**小计：22 ✅ / 1 ⚠️ / 1 ❌。** 23 个契约方法（不含 `shorten`）里只剩 `mercureInfo` 是 404 降级；`setShortUrlRedirectRules` 自 I9 起不再是 501。
+**小计：23 ✅ / 1 ⚠️ / 0 ❌。** 24 个动作里唯一非 ✅ 的是 `mercureInfo` —— 404 `MERCURE_NOT_CONFIGURED` 降级（平台无 Realtime/Mercure 对应物，已定不做）；`setShortUrlRedirectRules` 自 I9 起不再是 501，`singleStepCreateShortUrl` 自 I8 起已实现。
 
 ---
 
@@ -53,8 +54,8 @@
 | 地理定位 | ✅（GeoLite2） | ✅ | DB-IP City Lite（免 key、可商用）；**无 `time_zone` 字段** → `visit.timezone` 恒 NULL |
 | Bot 识别 | ✅（crawler-detect 库） | ✅ | rxlink 用 `ua_rule` 规则表 + `ua_parse`，覆盖较简 |
 | API key 角色/作用域 | ✅（**上游已标 `@deprecated`**） | ⚠️ | rxlink 有 `api_key_role` 表结构，但兼容层 `authenticate()` 只校验 key 有效性，不校验角色 |
-| API key 过期 | ✅（`expirationDate`） | ❌ | rxlink `api_key` 无 `expires_at` 列 |
-| 跟踪开关 | ✅（env：disableTracking / disableIpTracking / disableReferrer / disableUa / anonymizeRemoteAddr / disableTrackParam / disableTrackingFrom） | ❌ | rxlink 无这些开关；原始 IP 走「富化后立即清空 + 7 天硬兜底」的隐私口径（见 `geo-enrichment.md`） |
+| API key 过期 | ✅（`expirationDate`） | ✅ | **I8/R6 已实现**：迁移 `0015_api_key_expires_at.sql` 加 `expires_at` 列 + `compat_auth` 判过期；**线上实测过期 key → 401 `invalid-api-key`（文案含 "has expired"）** |
+| 跟踪开关 | ✅（env：disableTracking / disableIpTracking / disableReferrer / disableUa / anonymizeRemoteAddr / disableTrackParam / disableTrackingFrom） | ✅ | **I8/R8 已实现**：6 个开关全在 `fc/redirect/index.js`（`DISABLE_TRACKING` / `DISABLE_IP_TRACKING` / `DISABLE_REFERRER_TRACKING` / `DISABLE_UA_TRACKING` / `DISABLE_TRACK_PARAM` / `DISABLE_TRACKING_FROM`），默认全关（与上游一致）；`anonymizeRemoteAddr` 由「富化后立即清空 + 7 天硬兜底」的口径替代 |
 | Matomo 集成 | ✅（访问上报 + CLI `matomo:send-visits`） | ❌ | — |
 | 导入其他平台短链 | ✅（`shlinkio/shlink-importer`） | ❌ | — |
 | CLI（31 个命令） | ✅ | ❌ | rxlink 用脚本代替（`new-api-key.sh`、`build-*.mjs`），无交互式 CLI |
@@ -102,15 +103,17 @@ rxlink 控制台直接用同一套 build 产物，因此**页面与交互全部�
 
 ## E. 结论与缺口（按建议优先级）
 
-**已覆盖**：REST 22/24 动作；UI 21 项功能里 18 项全通、2 项降级（域名红标 / 实时更新）、1 项无（中文界面）；核心链路（跳转 / 统计 / 标签 / 域名 / 地理 / 404 回退 / 死链清理 / **动态跳转规则**）全部上线并验收。
+**已覆盖**：REST **23/24** 动作（唯一 ⚠ 是 `mercureInfo` 404 降级，平台无对应物）；UI 21 项功能里 18 项全通、2 项降级（域名红标 / 实时更新降级为轮询）、1 项无（中文界面，上游也没有）；服务端非 REST 能力里核心链路（跳转 / 统计 / 标签 / 域名 / 地理 / 404 回退 / 死链清理 / robots / 追踪像素 / **动态跳转规则** / **标题自动解析**）全部上线并验收。
 
 | 优先级 | 缺口 | 成本 | 建议 |
 |---|---|---|---|
-| 中 | `robots.txt`（`crawlable` 字段现在无效） | 低（跳转函数加一个分支） | 要做就顺手做，对 SEO 有意义 |
-| 中 | 追踪像素 `/{code}/track` | 低（返回 1×1 gif + 记一条访问） | 有邮件追踪需求再做 |
-| 低 | API key 过期 | 低（加列 + 鉴权检查） | 角色已上游废弃，可只做过期 |
-| 低 | 时区字段 | 中（换带 `time_zone` 的 mmdb 源） | 控制台不渲染，可不做 |
+| 低 | API key 角色/作用域校验 | 低 | 上游已标 `@deprecated` → **建议不做** |
+| 低 | 时区字段（`visit.timezone` 恒 NULL） | 中（换带 `time_zone` 的 mmdb 源） | 控制台不渲染，可不做 |
 | 低 | CLI / Matomo / Importer | 高 | 运营增强，非核心；按需 |
+| — | 实时推送（Mercure） | 中 | 平台无 Realtime/RabbitMQ/Redis 对应物 → 明确不做，控制台降级轮询 |
+| — | 多段 slug / 中文界面 | — | D3 排除 / 上游 issue #31 `wontfix` → 明确不做 |
+
+> **已订正（2026-11-12）**：原表里的 `robots.txt`、追踪像素、`API key 过期` 三项在 I8（R3/R6/R8）就已实现，本表已移除；`singleStepCreateShortUrl` 同理（I8/R4）。
 
 ---
 
@@ -124,3 +127,14 @@ rxlink 控制台直接用同一套 build 产物，因此**页面与交互全部�
 - Mercure 404：`supabase/functions/compat/handler.ts` 的 `/mercure-info` 分支。
 - API key 角色未校验：`supabase/functions/compat/handler.ts:123-131`（`authenticate` 只查 `api_key`，不查 `api_key_role`）；上游 `module/Rest/src/ApiKey/Role.php` 标注 `@deprecated`。
 - 中文界面结论：`shlink-web-client/src` 全量 grep 无 i18n；上游 issue `shlinkio/shlink-web-client#31` 状态 `wontfix`（2018-11-02）。
+
+### 2026-11-12 订正轮的线上复核（逐条实测，非读代码推断）
+
+| 结论 | 怎么验的 | 结果 |
+|---|---|---|
+| `singleStepCreateShortUrl` 已实现 | `GET /rest/v3/short-urls/shorten?longUrl=…&apiKey=…` | **200** + JSON；`&format=txt` → **200** 纯文本短链 |
+| API key 过期已生效 | 用 `expires_at=2020-01-01` 的 key 调 `/short-urls` | **401** `invalid-api-key`，detail 含 "has expired" |
+| 追踪开关 6 个都在已上传的 FC 包里 | `unzip -p dist/redirect.zip index.js \| grep DISABLE_` | 6 个开关全部命中（`DISABLE_TRACKING` / `_IP_` / `_REFERRER_` / `_UA_` / `DISABLE_TRACK_PARAM` / `_TRACKING_FROM`） |
+| 追踪链路完好 | 访问新链 → 查 `visit` / `visit_inbox` | `visit` 2 行；`visit_inbox` 2 行且 `processed_at` 已置、`remote_addr` 已清空；全库 `processed_at is null` = **0** 行 |
+| 跳转是真的（不是 404 回退） | `curl -D-` 看 Location | `HTTP/1.1 302` + `Location: https://example.com/r11`（目标即长链） |
+| DB-IP 署名已上线（handover 说「待重传 console.zip」是陈旧项） | `curl https://console.example.com/ \| grep DB-IP` | 命中（页脚已含 `IP Geolocation by DB-IP`） |
