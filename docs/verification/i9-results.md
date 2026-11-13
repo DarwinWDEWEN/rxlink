@@ -1,7 +1,7 @@
 # I9 —— R9 动态跳转规则 验证记录
 
 > 执行日期：2026-11-12。通道：`supabase db query --db-url`（逐条）、`functions-cli`、`curl`、Node 24 / Deno 2.9.7 测试。
-> 状态：**兼容层与数据面已上线并验收；跳转函数待上传 `dist/redirect.zip`，上传后补做跳转侧线上验收**（见 §7）。
+> 状态：**已验收** —— 兼容层、数据面、跳转函数均已上线并线上复验（见 §7）。
 > 设计：`docs/superpowers/specs/2026-11-12-r9-dynamic-redirect-rules-design.md`；实施计划：`docs/superpowers/plans/2026-11-12-r9-dynamic-redirect-rules.md`；差距清单：`docs/shlink-feature-checklist.md`。
 
 ## 1. 迁移 0018（已应用，45 条语句）

@@ -1,7 +1,7 @@
 # I12 —— 控制台中文化 验证记录
 
 > 执行日期：2026-11-13。通道：Node 24（`/Users/wang/.nvm/versions/node/v24.14.0/bin`）、Vite 8、Playwright 1.64.1、Deno 2.9.7。
-> 状态：**构建期字面量替换已落地并验收；控制台产物已出中文包**（线上替换见 §6 遗留）。
+> 状态：**已验收并上线** —— 构建期字面量替换落地；2026-11-13 重打 `dist/console.zip` 上传 FC，线上控制台已显示中文（见 §7 第 1 条）。
 > 设计：`docs/superpowers/specs/2026-11-13-console-i18n-design.md`；实施计划：`docs/superpowers/plans/2026-11-13-console-i18n.md`。
 
 ## 1. 方案与产物
@@ -80,9 +80,9 @@
 | `compat.test.ts` + `title-resolver.test.ts` | 117 | ✅ 全绿 |
 | **合计** | **430** | ✅ |
 
-## 7. 遗留与口径
+## 7. 线上状态与口径
 
-1. **线上控制台仍是英文包**：`console.example.com` 由 FC 函数 `console-prod` 托管，需要把 `shlink-web-client/build/` 重新打包上传才会显示中文。本机构建产物已就绪（`dist/console.zip` 待重打）。
+1. **线上控制台已中文**（2026-11-13）：`node scripts/build-console-fc.mjs` 重打 `dist/console.zip`（534,615 B）并上传 FC `console-prod` 后，线上 index 指向 `assets/index-C7FdqMXW.js`（200，1,462,178 B，1,874 个中文字符）；旧英文 asset `index-XmYP89Qr.js` → 404；Playwright 实测 `/`、`/manage-servers`、`/server/create`（含展开高级选项）、404 页全中文；兼容层回归 117/117。
 2. **`<html lang="en">` 未改**：这是文档属性，不是界面文案，按「只翻界面」口径未动。
 3. **短 key 风险**：` or ` / ` than ` 等 6 键以空格包裹的短文案已确认在 src 与上游各只出现 1 次且都是 UI 文本；`, ` / ` - ` / `?` / `.` / `*` 等更短的 key 一律不进字典（会误伤代码），改用全角标点字面量直接写在源码里。
 4. **oxfmt 引号风格**：仓库格式化器强制单引号，插件已同时匹配双/单引号并保持原风格；`<Icon /> {'文本'}`（表达式前加空格）可避免 oxfmt 拆行导致空格丢失。

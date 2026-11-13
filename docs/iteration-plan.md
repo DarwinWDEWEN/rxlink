@@ -228,7 +228,7 @@
 
 ## I7 —— 地理富化（#41–#44）
 
-> **状态：主体已上线并验证（2026-11-11）。** #41（迁移 0012）、#42（跳转函数 + drain 带 remote_addr）、#43（富化函数，已部署上线）、#44（契约与兜底）全部落地；剩余仅「DB-IP 署名的控制台包重传」这一项用户动作。
+> **状态：已上线并验证（2026-11-11，2026-11-13 复验）。** #41（迁移 0012）、#42（跳转函数 + drain 带 remote_addr）、#43（富化函数，已部署上线）、#44（契约与兜底）全部落地；DB-IP 署名的控制台包已上线（2026-11-13 复核线上含 `rxlink-attribution` 节点）。
 > 设计定稿：`docs/geo-enrichment.md`。任务编号沿用交接文档的 #41–#44。
 
 **目标**：访问明细能带上地理信息（国家/省/市/经纬度/时区），且原始 IP 只短暂留存。
@@ -392,7 +392,7 @@
 - [x] **真实流量端到端探针**（2026-11-11）：`curl -H "x-forwarded-for: 8.8.8.8"` 打真实短链 → 入队带 IP → 一轮 cron drain 后 inbox IP 清空、`visit` 拿到 IP → 富化写 `US / United States / California / Mountain View / 37.422,-122.085` 并清空 `visit.remote_addr`
 - [x] **权限复核**（2026-11-11）：`visit` / `visit_inbox` / `visit_bak_0012` 均 `force RLS` + 0 policy，`anon`/`authenticated` 表级与列级授权均为空 —— 原始 IP 对外不可读
 - [x] **DB-IP 署名（代码）**（2026-11-11）：`fc/console/index.js` 返回 HTML 时注入页脚「IP Geolocation by DB-IP」+ db-ip.com 链接，**7 例单测全绿**（不重编 Angular）
-- [ ] **DB-IP 署名上线**：待他重传 `dist/console.zip`（`node scripts/build-console-fc.mjs` 已重新打包）
+- [x] **DB-IP 署名上线**：已随 `dist/console.zip` 上线 —— 线上 `console.example.com/` HTML 含 `rxlink-attribution` 节点（2026-11-13 复核）
 - [ ] **确认 FC 定时触发器 cron 已用 6 字段** `CRON_TZ=Asia/Shanghai 0 0 * * * *`（本机无法验证）
 
 ---
@@ -432,7 +432,7 @@
 - [x] 线上 POST 非法 `device=desktop2` → 400 `invalid-data`，detail 指出非法值
 - [x] 线上 seq 独立性复验：改一次规则 `rules_seq` 31→55、`link_seq` 恒 101
 - [x] 线上测试规则已清空（`short_url_redirect_rule` 0 行 / `redirect_condition` 0 行）
-- [x] `dist/redirect.zip` 重打包（7 个文件，含 `china-geo.bin`），待上传
+- [x] `dist/redirect.zip` 重打包（7 个文件，含 `china-geo.bin`）
 - [x] **用户上传 `dist/redirect.zip` 到 FC 跳转函数并部署**（2026-11-12）
 - [x] 线上跳转验收：写 `query-param src=wechat` 规则 → `?src=wechat` 跳规则目标、`?src=other` 跳默认长链（等 ≤7s 让规则缓存生效）；连测 3 次一致，非新旧混跑
 - [x] 线上 11 种条件逐条命中（含 geo 省名中英文、国家码、IP 精确/CIDR、UA 设备/浏览器、语言、查询参数三类、日期两类）
@@ -509,12 +509,12 @@
 | I4 | 统计读接口（B2） | **已验收** | I2、I3 | B4 全勾 | 2026-11-09 当日 | `0009` 五个 RPC + `compat` 8 条路由；概览对账、标签/域名/时间筛选、孤儿三类、删访问联动全通，见 `docs/verification/i4-results.md` |
 | I5 | 控制台补全（B3/B4） | **已验收** | I4 | B5 全勾 | 2026-11-09 → 2026-11-10 | `0010` 七个 RPC + 9 条路由；用户 FC 函数 `console-prod` + 证书，正式域名页面/资源/深链/SW/跨域 API 全通，见 `docs/verification/i5-results.md` |
 | I6 | 生产硬化 | **已验收** | I5 | B6 全勾 | 2026-11-10 当日 | 探针退场/prune 转真/压测(p95 416ms)/可观测/runbook/HTTPS 复测全通（B6 6/6；cdndev 放弃），见 `docs/verification/i6-results.md` |
-| I7 | 地理富化（#41–#44） | **进行中（主体已上线）** | I6 | B7 全勾 | 2026-11-10 → 2026-11-11 | #41 迁移 0012 + #42 跳转/drain 带 remote_addr + #43 富化函数 + #44 契约与兜底**全部上线**；换源 DB-IP；`0013` 修回写失配；mmdb 随 Layer 分发 + 触发改每小时；`0014` 收紧入队侧 IP 留存（线上 inbox 持 IP 291→0）；FC 富化函数手动跑通 275/275；真实流量端到端探针闭环；DB-IP 署名代码完成（7 单测）；**剩他两个动作**：重传 `console.zip`、确认触发器 cron 是 6 字段 |
+| I7 | 地理富化（#41–#44） | **进行中（主体已上线）** | I6 | B7 全勾 | 2026-11-10 → 2026-11-11 | #41 迁移 0012 + #42 跳转/drain 带 remote_addr + #43 富化函数 + #44 契约与兜底**全部上线**；换源 DB-IP；`0013` 修回写失配；mmdb 随 Layer 分发 + 触发改每小时；`0014` 收紧入队侧 IP 留存（线上 inbox 持 IP 291→0）；FC 富化函数手动跑通 275/275；真实流量端到端探针闭环；DB-IP 署名代码完成（7 单测）；**剩他一个动作**：确认触发器 cron 是 6 字段（`console.zip` 已上线） |
 | I8 | M2 收尾批次（R1–R8） | **已验收** | I7 | B8 全勾 | 2026-11-11 当日 | 迁移 0015–0017 + 跳转 R1/R2/R3/R8 + 兼容层 R4/R6/R7 + cron R5 全上线；compat 改单文件构建包；见 `docs/verification/i8-results.md` |
 | I9 | R9 动态跳转规则 | **已验收** | I8 | B9 全勾 | 2026-11-12 当日 | 迁移 0018/0019 + 兼容层 version 5.1.0 + FC 跳转包全线上；11 种条件逐条线上命中；控制台存/删回环 200；**顺带修掉 I5 起的多标签筛选缺陷**（tags/excludeTags 没拆逗号）；109 例全绿，见 `docs/verification/i9-results.md` |
 | I10 | R10 标题自动解析 | **已验收** | I9 | B10 全勾 | 2026-11-12 当日 | 迁移 0020（`title_was_auto_resolved` + 重建两个 RPC）+ `title-resolver.ts`（抓取 + SSRF）+ 兼容层接线；**实测 Edge Function 可出公网**；SSRF 拦截与手填标题粘性线上验证；117 例全绿；**顺带修掉构建脚本不内联本地 import 的部署级缺陷**，见 `docs/verification/r10-results.md` |
 | I11 | 收尾轮：清单订正 + 上线前置清单 | **已验收** | I10 | 清单订正完成 + `release-checklist.md` 交付 | 2026-11-12 当日 | 功能清单 3 处陈旧 ❌ 订正（`singleStepCreateShortUrl` / 追踪开关 / API key 过期，实为 I8 已实现，逐条线上复核）；REST 实际 **23/24**；新建 `docs/release-checklist.md`（含唯一真阻塞项：Supabase 升付费版）；订正 handover 3 处陈旧项 |
-| I12 | 控制台中文化 | **进行中（构建侧已验收）** | I11 | 中文构建断言通过 + 截图验收 | 2026-11-13 当日 | 构建期字面量替换（vite 插件 + 301 条字典 + 双基准断言）；src 65 条 + 上游 236 条全翻；中英双构建出口；Playwright 实测 5 个页面全中文；117 例兼容层回归全绿；**待重打 `dist/console.zip` 上传 FC**，见 `docs/verification/i12-results.md` |
+| I12 | 控制台中文化 | **已验收** | I11 | 中文构建断言通过 + 截图验收 + 线上复验 | 2026-11-13 当日 | 构建期字面量替换（vite 插件 + 301 条字典 + 双基准断言）；src 65 条 + 上游 236 条全翻；中英双构建出口；Playwright 实测 5 个页面全中文；117 例兼容层回归全绿；**线上已生效**（index 指向 `index-C7FdqMXW.js`，旧英文包 404），见 `docs/verification/i12-results.md` |
 
 状态词只用四个：**未开始 / 进行中 / 待他拍板 / 已验收**。
 
@@ -556,4 +556,5 @@
 | 2026-11-12 | I10 验收：R10 标题自动解析上线。迁移 0020（`short_url.title_was_auto_resolved` + 重建 `create_short_url` 13→14 参 / `update_short_url` 3→4 参 + 权限收口重做）；新建 `title-resolver.ts`（标题/charset/转码/实体/截断纯函数 + SSRF 地址判定 + 抓取主流程）；兼容层接线（建链未填标题才抓、编辑抓到的标题走独立 `p_auto_title`、`AUTO_RESOLVE_TITLES` 开关默认开）；**实测 Edge Function 可出公网**（本轮最大未知项解除）；线上验证：抓标题成功、`169.254.169.254`/`localhost:5432` 被 SSRF 拦截（建链成功但无标题）、改长链标题刷新、手填标题粘性、开关关/开往返、延迟 p50 0.45s；117 例全绿；**顺带修掉构建脚本不内联本地 import 的部署级缺陷**（部署包会引用不存在的模块）；顺带修正设计稿 §4.6 关于 `link_version` 的错误断言（Postgres `UPDATE OF` 按 SET 列表判定 → 任何 PATCH 都 bump，属 0008 起既有行为） |
 | 2026-11-12 | I11 收尾轮：功能清单订正（3 处陈旧 ❌ → ✅：`singleStepCreateShortUrl` 实为 I8/R4 已实现、6 个追踪开关实为 I8/R8 已实现、API key 过期实为 I8/R6 已实现 —— 本轮逐条**线上复核**而非读代码推断）；REST 实际 **23/24**（唯一 ⚠ 是 Mercure 404 降级）；新建 `docs/release-checklist.md`（唯一真阻塞项 = Supabase 升付费版；另含 cdndev 解析仍存在、`statictest` 处于 DELETING、备份表 158 行待 drop、cron 6 字段待确认）；订正 handover §7.2 三处陈旧项（console.zip 署名早已上线 / 探针残留 I6 已清 / `console` 不是闲置函数，真正闲置的是 `statictest`） |
 | 2026-11-13 | **发布收尾 + 线上全量复验**：Edge 函数 `statictest` 已删（`functions-cli delete` → 200，list 只剩 `compat` v14 / `console` v3）；备份表 `visit_bak_0012` 按「先备份再删」执行 —— 导出 158 条 `INSERT` 归档到 `.backups/`（已 gitignore，含访客数据不入库），**建临时表灌入做还原验证**（`INSERT 0 158`，两边 `md5(string_agg(...))` 完全一致 `79c8f191…`）后才 drop，`pg_class` 零残留；FC 全量复验 —— 跳转 302→真实长链、query 转发 `&extra=1`、pixel 真实 GIF89a、HEAD 302、robots 200、快照热态 `X-Link-Snapshot: 1\|158\|<age>` + `cached=1`；控制台 200 + DB-IP 署名节点；geo-enrich 真实数据命中（CN/Zhejiang/Hangzhou、HK/Sheung Wan、SI/Ljubljana）；`visit` 990 行中 825 行已富化、`remote_addr` 仅存 5 行（7 天硬留存生效）；**订正两处文档错误** —— ①「Edge 函数 `console` 是 `console.example.com` 宿主」实为 **FC 函数**（署名只由 `fc/console/index.js` 注入，Edge 模板没有；两边 asset 同为 `index-XmYP89Qr.js` 1,462,669B），Edge 副本降级为可清理项；② 署名 grep 口径（HTML 里 `IP Geolocation by <a>DB-IP</a>` 文字被标签隔开，连续字符串匹配会误判，正确写法 `grep -c 'rxlink-attribution'`）；补记跳转快照**冷启动判读口径**（首打命中新实例 `0\|null\|-1` 属正常，连打即 `1\|seq\|age`）；**同日再删 Edge 副本 `console`（v3）**（用户确认统一走 FC 版本）—— `functions-cli delete -s console` → 200，Edge 侧只剩 `compat`；删除后 `console.example.com` 复验 index 200/6,753B、asset `index-XmYP89Qr.js` 200（1,462,669B）、`manifest.json` 200、署名节点仍在，确认 FC 托管不受影响 |
-| 2026-11-13 | **I12 控制台中文化（构建侧完成）**：上游 `shlink-web-client` v4.9.0 零 i18n 基础设施、issue #31 `wontfix` → 自研**构建期字面量替换**方案：vite 插件 `scripts/i18n/vite-plugin-i18n.mjs` 在 `transform` 阶段按 `zh-CN.json`（**301 条**）替换 `@shlinkio/*/dist/**` 与 `src/**` 里的完整引号字面量，`buildEnd` 按 `expected.json`（上游 236 条 / 305 处）+ `expected.src.json`（src 72 条 / 82 处）**校验出现次数**，不符即构建失败（上游改文案不会静默漏翻）。**范围**：用户确认「全翻」src 约 60 条界面文案（计划原估 8 条）；只翻界面文案，国家名 / 浏览器名 / OS 名等数据值保留英文。**关键坑**：① 仓库格式化器 oxfmt 强制单引号 → 插件同时匹配双/单引号并保持原风格；② oxfmt 会把 `<Icon />{"X"}` 拆行导致空格丢失 → 改写为 `<Icon /> {'X'}`；③ `String.replace` 字符串模式只替换第一处 → 引号转义改 `split/join`（单测抓住）；④ 短 key（`, ` / ` - ` / `?` / `.` / `*`）一律不进字典以防误伤代码。**验证**：单测 12/12；中文构建 exit 0（301 条断言全过）；英文构建 exit 0 且 0 处中文；Playwright 实测 `/`、`/manage-servers`、`/server/create`（含展开高级选项）、404 页全中文；兼容层回归 117/117。**遗留**：`dist/console.zip` 待重打并上传 FC，线上控制台才会显示中文 |
+| 2026-11-13 | **I12 控制台中文化（构建侧完成）**：上游 `shlink-web-client` v4.9.0 零 i18n 基础设施、issue #31 `wontfix` → 自研**构建期字面量替换**方案：vite 插件 `scripts/i18n/vite-plugin-i18n.mjs` 在 `transform` 阶段按 `zh-CN.json`（**301 条**）替换 `@shlinkio/*/dist/**` 与 `src/**` 里的完整引号字面量，`buildEnd` 按 `expected.json`（上游 236 条 / 305 处）+ `expected.src.json`（src 72 条 / 82 处）**校验出现次数**，不符即构建失败（上游改文案不会静默漏翻）。**范围**：用户确认「全翻」src 约 60 条界面文案（计划原估 8 条）；只翻界面文案，国家名 / 浏览器名 / OS 名等数据值保留英文。**关键坑**：① 仓库格式化器 oxfmt 强制单引号 → 插件同时匹配双/单引号并保持原风格；② oxfmt 会把 `<Icon />{"X"}` 拆行导致空格丢失 → 改写为 `<Icon /> {'X'}`；③ `String.replace` 字符串模式只替换第一处 → 引号转义改 `split/join`（单测抓住）；④ 短 key（`, ` / ` - ` / `?` / `.` / `*`）一律不进字典以防误伤代码。**验证**：单测 12/12；中文构建 exit 0（301 条断言全过）；英文构建 exit 0 且 0 处中文；Playwright 实测 `/`、`/manage-servers`、`/server/create`（含展开高级选项）、404 页全中文；兼容层回归 117/117。**遗留**：`dist/console.zip` 待重打并上传 FC（已于同日解决，见下一条） |
+| 2026-11-13 | **I12 上线**：用户重打并上传 `dist/console.zip`（534,615 B，含中文包）到 FC `console-prod`。线上复核：index 指向 `assets/index-C7FdqMXW.js`（200，1,462,178 B，1,874 个中文字符），旧英文 asset `index-XmYP89Qr.js` → 404；Playwright 实测 `/`、`/manage-servers`、`/server/create`（含展开高级选项）、404 页全中文；页脚 `rxlink-attribution` 仍在；兼容层回归 117/117。**I12 状态转已验收。** |

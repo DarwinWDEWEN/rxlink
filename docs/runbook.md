@@ -173,6 +173,7 @@ curl -s "$base/short-urls/shorten?longUrl=https%3A%2F%2Fexample.com%2Fa&apiKey=$
 - 出英文：`npm run build:en`（`I18N_LANG=en`）
 - 上游升级后：先跑 `node scripts/i18n/gen-expected.mjs` 刷新基准，再补字典
 - 只翻界面文案；国家名 / 浏览器名 / OS 名等数据值保留英文。字典 301 条，基准 236（上游）+ 72（src）。
+- **当前线上是中文包**（2026-11-13 上线，asset `index-C7FdqMXW.js`）；改文案后按上面流程重打 zip 上传即生效。
 
 ### 5.3 兼容层（compat Edge Function）
 

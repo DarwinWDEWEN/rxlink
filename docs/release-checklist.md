@@ -76,6 +76,7 @@
 | handover 里的待办 | 实测结论 |
 |---|---|
 | 重传 `dist/console.zip`（DB-IP 署名页脚） | **已上线** —— `https://console.example.com/` 的 HTML 里已含 `IP Geolocation by DB-IP` ✅ |
+| 控制台中文化（I12） | **已上线** —— `dist/console.zip` 已重打上传，线上 `assets/index-C7FdqMXW.js` 200、旧英文包 `index-XmYP89Qr.js` 404，Playwright 实测 4 页全中文 ✅ |
 | FC 账号探针残留 | I6 已全退场（探针函数/表/Edge Function/cron 作业都撤了）✅ |
 | Domains 红标处置 | I0 已定「先接受」（方案 a），不是待办 |
 | 备份表 `visit_bak_0012` 授权收口 | 已收口，只剩 drop 本体（第 4 项） |
