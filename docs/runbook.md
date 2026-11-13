@@ -168,6 +168,12 @@ curl -s "$base/short-urls/shorten?longUrl=https%3A%2F%2Fexample.com%2Fa&apiKey=$
 - 回滚：回退 `shlink-web-client/` 源码 → 重新 build → 重新打 zip → 重新上传。
 - 验证：`https://console.example.com/` 200；深链刷新不 404；SW active；页面底部出现 DB-IP 署名。
 
+**中文化（I12）**：构建期由 vite 插件 `scripts/i18n/vite-plugin-i18n.mjs` 按 `scripts/i18n/zh-CN.json` 替换上游产物与 `src` 里的英文字面量；`buildEnd` 按 `expected.json` + `expected.src.json` 校验出现次数，上游改文案则构建失败。
+- 出中文：`npm run build`（默认）
+- 出英文：`npm run build:en`（`I18N_LANG=en`）
+- 上游升级后：先跑 `node scripts/i18n/gen-expected.mjs` 刷新基准，再补字典
+- 只翻界面文案；国家名 / 浏览器名 / OS 名等数据值保留英文。字典 301 条，基准 236（上游）+ 72（src）。
+
 ### 5.3 兼容层（compat Edge Function）
 
 ```bash

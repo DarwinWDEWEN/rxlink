@@ -91,7 +91,7 @@ rxlink 控制台直接用同一套 build 产物，因此**页面与交互全部�
 | QR 码生成 | 短链详情页按钮 | ✅ | 客户端生成 |
 | PWA / Service Worker | — | ✅ | 不缓存 API 响应 |
 | 实时更新（Mercure） | 设置页开关 | ⚠️ | 端点 404，降级为轮询 |
-| **中文界面** | — | ❌ | 上游仅英文且 issue #31 被 `wontfix`；用中文操作手册代替（`docs/manual/`） |
+| **中文界面** | — | ✅ | 构建期字面量替换（I12）；只翻界面文案，国家名 / 浏览器名 / OS 名保留英文 |
 
 ---
 
@@ -103,7 +103,7 @@ rxlink 控制台直接用同一套 build 产物，因此**页面与交互全部�
 
 ## E. 结论与缺口（按建议优先级）
 
-**已覆盖**：REST **23/24** 动作（唯一 ⚠ 是 `mercureInfo` 404 降级，平台无对应物）；UI 21 项功能里 18 项全通、2 项降级（域名红标 / 实时更新降级为轮询）、1 项无（中文界面，上游也没有）；服务端非 REST 能力里核心链路（跳转 / 统计 / 标签 / 域名 / 地理 / 404 回退 / 死链清理 / robots / 追踪像素 / **动态跳转规则** / **标题自动解析**）全部上线并验收。
+**已覆盖**：REST **23/24** 动作（唯一 ⚠ 是 `mercureInfo` 404 降级，平台无对应物）；UI 21 项功能里 19 项全通、2 项降级（域名红标 / 实时更新降级为轮询）；服务端非 REST 能力里核心链路（跳转 / 统计 / 标签 / 域名 / 地理 / 404 回退 / 死链清理 / robots / 追踪像素 / **动态跳转规则** / **标题自动解析** / **中文界面**）全部上线并验收。
 
 | 优先级 | 缺口 | 成本 | 建议 |
 |---|---|---|---|
@@ -111,7 +111,7 @@ rxlink 控制台直接用同一套 build 产物，因此**页面与交互全部�
 | 低 | 时区字段（`visit.timezone` 恒 NULL） | 中（换带 `time_zone` 的 mmdb 源） | 控制台不渲染，可不做 |
 | 低 | CLI / Matomo / Importer | 高 | 运营增强，非核心；按需 |
 | — | 实时推送（Mercure） | 中 | 平台无 Realtime/RabbitMQ/Redis 对应物 → 明确不做，控制台降级轮询 |
-| — | 多段 slug / 中文界面 | — | D3 排除 / 上游 issue #31 `wontfix` → 明确不做 |
+| — | 多段 slug | — | D3 排除 → 明确不做（中文界面已由 I12 实现） |
 
 > **已订正（2026-11-12）**：原表里的 `robots.txt`、追踪像素、`API key 过期` 三项在 I8（R3/R6/R8）就已实现，本表已移除；`singleStepCreateShortUrl` 同理（I8/R4）。
 
@@ -126,7 +126,7 @@ rxlink 控制台直接用同一套 build 产物，因此**页面与交互全部�
 - 跳转规则端点（I9）：`supabase/functions/compat/handler.ts` 的 `GET|POST|PATCH /short-urls/{code}/redirect-rules`；条件类型白名单与值域校验见同文件 `CONDITION_TYPES` / `validateCondition`。
 - Mercure 404：`supabase/functions/compat/handler.ts` 的 `/mercure-info` 分支。
 - API key 角色未校验：`supabase/functions/compat/handler.ts:123-131`（`authenticate` 只查 `api_key`，不查 `api_key_role`）；上游 `module/Rest/src/ApiKey/Role.php` 标注 `@deprecated`。
-- 中文界面结论：`shlink-web-client/src` 全量 grep 无 i18n；上游 issue `shlinkio/shlink-web-client#31` 状态 `wontfix`（2018-11-02）。
+- 中文界面结论：`shlink-web-client/src` 全量 grep 无 i18n；上游 issue `shlinkio/shlink-web-client#31` 状态 `wontfix`（2018-11-02）→ **I12 用构建期字面量替换自行实现**（`scripts/i18n/`，见 `docs/verification/i12-results.md`）。
 
 ### 2026-11-12 订正轮的线上复核（逐条实测，非读代码推断）
 
