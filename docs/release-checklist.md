@@ -104,7 +104,7 @@ curl -sS -o /dev/null -w '302:    %{http_code}\n' https://example.com/2b9yj
 curl -sS -D- -o /dev/null https://example.com/2b9yj | grep -iE '^(location|x-link-snapshot|server-timing)'
 
 # ④ 控制台静态站 + DB-IP 署名（FC 函数宿主）
-curl -sS https://console.example.com/ | grep -c 'rxlink-attribution'   # 期望 1
+curl -sS https://console.example.com/ | grep -c '<div class="rxlink-attribution"'   # 期望 1
 
 # ⑤ 数据库健康（见 runbook §3.1）
 ```
@@ -128,7 +128,8 @@ curl -sS https://console.example.com/ | grep -c 'rxlink-attribution'   # 期望 
 
 签名节点是 `<div class="rxlink-attribution">IP Geolocation by <a>DB-IP</a></div>`。
 注意 **`IP Geolocation by DB-IP` 这个连续字符串在 HTML 里不存在**（文字被 `<a>` 标签隔开），
-用 `grep 'IP Geolocation by DB-IP'` 会**误判为"没上线"**。正确写法是 `grep -c 'rxlink-attribution'`。
+用 `grep 'IP Geolocation by DB-IP'` 会**误判为"没上线"**。同时 CSS 选择器也包含
+`rxlink-attribution`，所以应精确匹配节点：`grep -c '<div class="rxlink-attribution"'`。
 
 ---
 

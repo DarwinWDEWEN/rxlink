@@ -9,7 +9,7 @@
 // 所以本地相对 import 必须**内联**进产物 —— 否则入口的 import 会指向一个
 // 不在部署包里的模块，运行时直接加载失败。本脚本按依赖顺序内联，并做两层保护：
 //   1. 顶层声明重名 → 构建中止（内联后同名会互相覆盖）
-//   2. 出现非相对 import（npm 包 / node: 内置）→ 构建中止（无法内联）
+//   2. node: 内置 import 原样保留；其他非相对 import → 构建中止
 //
 // 用法：node scripts/build-compat-function.mjs
 // 部署：node scripts/build-compat-function.mjs &&
@@ -47,9 +47,11 @@ function declaredNames(source) {
   return names;
 }
 
-// 收集「所有 import 语句」的文本区间，用来判断是否残留
-function stripImports(source) {
-  return source.replace(IMPORT_RE, '');
+function stripLocalImports(source) {
+  return source.replace(
+    IMPORT_RE,
+    (statement, spec) => spec.startsWith('.') ? '' : statement,
+  );
 }
 
 function inlineLocalImports(entryFile) {
@@ -72,14 +74,22 @@ function inlineLocalImports(entryFile) {
 
     // 先递归处理依赖，保证依赖的代码排在前面
     for (const spec of importsOf(source)) {
-      if (!spec.startsWith('.')) {
+      if (spec.startsWith('.')) {
+        visit(resolvePath(dirname(file), spec));
+      } else if (!spec.startsWith('node:')) {
         throw new Error(`${file} 里有非相对 import（${spec}）→ 无法内联进单文件，构建中止`);
       }
-      visit(resolvePath(dirname(file), spec));
     }
 
-    let body = stripImports(source);
-    if (body.includes('\nimport ') || /^[ \t]*import\s/m.test(body)) {
+    let body = stripLocalImports(source);
+    const withoutAllowedImports = body.replace(
+      IMPORT_RE,
+      (statement, spec) => spec.startsWith('node:') ? '' : statement,
+    );
+    if (
+      withoutAllowedImports.includes('\nimport ') ||
+      /^[ \t]*import\s/m.test(withoutAllowedImports)
+    ) {
       throw new Error(`${file} 里有本脚本处理不了的 import（跨行写法？）→ 构建中止`);
     }
     // 被内联的模块去掉 export 关键字；入口模块保留（titleResolverDeps 是测试钩子）

@@ -36,7 +36,12 @@ export function i18nPlugin() {
 
   return {
     name: 'rxlink-i18n',
+    apply: 'build',
     enforce: 'pre',
+    transformIndexHtml(html) {
+      const lang = enabled ? 'zh-CN' : 'en';
+      return html.replace(/(<html[^>]*\slang=)["'][^"']*["']/i, `$1"${lang}"`);
+    },
     transform(code, id) {
       if (!enabled) return undefined;
       if (!TARGET_RE.test(id)) return undefined;

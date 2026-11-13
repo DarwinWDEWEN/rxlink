@@ -3,6 +3,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { replaceLiterals } from '../replace-literals.mjs';
+import { i18nPlugin } from '../vite-plugin-i18n.mjs';
 
 describe('replaceLiterals', () => {
   it('替换完整字面量', () => {
@@ -81,5 +82,46 @@ describe('replaceLiterals', () => {
     const dict = { Note: "备注'附" };
     const { code } = replaceLiterals("const a = 'Note';", dict);
     assert.equal(code, `const a = '备注\\'附';`);
+  });
+
+  it('完整标题模板一次替换并保留变量占位符', () => {
+    const dict = { 'Edit "{serverName}"': '编辑“{serverName}”' };
+    const { code, counts } = replaceLiterals(
+      `const title = 'Edit "{serverName}"';`,
+      dict,
+    );
+
+    assert.equal(code, `const title = '编辑“{serverName}”';`);
+    assert.deepEqual(counts, { 'Edit "{serverName}"': 1 });
+  });
+});
+
+describe('i18nPlugin', () => {
+  it('只在构建阶段生效', () => {
+    assert.equal(i18nPlugin().apply, 'build');
+  });
+
+  it('中文构建声明 zh-CN', () => {
+    const previous = process.env.I18N_LANG;
+    delete process.env.I18N_LANG;
+    try {
+      const plugin = i18nPlugin();
+      assert.match(plugin.transformIndexHtml('<html lang="en">'), /<html lang="zh-CN">/);
+    } finally {
+      if (previous === undefined) delete process.env.I18N_LANG;
+      else process.env.I18N_LANG = previous;
+    }
+  });
+
+  it('英文构建声明 en', () => {
+    const previous = process.env.I18N_LANG;
+    process.env.I18N_LANG = 'en';
+    try {
+      const plugin = i18nPlugin();
+      assert.match(plugin.transformIndexHtml('<html lang="zh-CN">'), /<html lang="en">/);
+    } finally {
+      if (previous === undefined) delete process.env.I18N_LANG;
+      else process.env.I18N_LANG = previous;
+    }
   });
 });

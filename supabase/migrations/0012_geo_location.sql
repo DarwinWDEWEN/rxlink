@@ -268,10 +268,14 @@ do $$
 declare
   jid integer;
 begin
-  select jobid into jid from cron.job where jobname = 'rxlink-retire-ip';
-  if jid is not null then
-    perform cron.unschedule(jid);
+  -- Hosted ADB already has pg_cron; a fresh local Supabase database may not.
+  -- The production baseline migration installs the final job set.
+  if to_regclass('cron.job') is not null then
+    select jobid into jid from cron.job where jobname = 'rxlink-retire-ip';
+    if jid is not null then
+      perform cron.unschedule(jid);
+    end if;
+    perform cron.schedule('rxlink-retire-ip', '0 * * * *', 'select retire_remote_addr(7)');
   end if;
-  perform cron.schedule('rxlink-retire-ip', '0 * * * *', 'select retire_remote_addr(7)');
 end;
 $$;

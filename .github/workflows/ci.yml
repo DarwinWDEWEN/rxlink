@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            shlink-web-client/package-lock.json
+            fc/geo-enrich/package-lock.json
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: shlink-web-client
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: shlink-web-client
+
+      - name: Run Node.js tests
+        run: |
+          node --test \
+            fc/console/test/console.test.js \
+            fc/geo-enrich/test/geo-enrich.test.js \
+            fc/redirect/test/*.test.js \
+            scripts/i18n/test/*.test.mjs \
+            scripts/test-production-baseline.mjs
+
+      - name: Run Deno tests
+        run: |
+          deno test --allow-env \
+            supabase/functions/compat/test/compat.test.ts \
+            supabase/functions/compat/test/title-resolver.test.ts
+
+      - name: Check Deno sources
+        run: |
+          deno check \
+            supabase/functions/compat/index.ts \
+            supabase/functions/compat/handler.ts \
+            supabase/functions/compat/title-resolver.ts
+
+      - name: Run frontend quality gates
+        run: |
+          npm run cs
+          npm run types
+          npm test
+        working-directory: shlink-web-client
+
+      - name: Build Chinese frontend
+        run: |
+          npm run build
+          grep -q '<html lang="zh-CN">' build/index.html
+        working-directory: shlink-web-client
+
+      - name: Build English frontend
+        run: |
+          npm run build:en
+          grep -q '<html lang="en">' build/index.html
+        working-directory: shlink-web-client
+
+  database:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Replay migrations from an empty database
+        run: |
+          supabase start
+          supabase db reset
+
+      - name: Verify production baseline
+        run: |
+          container='supabase_db_rxlink'
+          test "$(docker exec "$container" psql -U postgres -d postgres -Atc \
+            "select count(*) from pg_class where relnamespace = 'public'::regnamespace and relname like 'probe_%'")" = "0"
+          test "$(docker exec "$container" psql -U postgres -d postgres -Atc \
+            "select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname like 'probe_%'")" = "0"
+          test "$(docker exec "$container" psql -U postgres -d postgres -Atc \
+            "select authority || '|' || scheme from domain where id = 0")" = "example.com|https"
+          test "$(docker exec "$container" psql -U postgres -d postgres -Atc \
+            "select count(*) from cron.job where jobname in ('rxlink-drain','rxlink-prune','rxlink-retire-ip','rxlink-expired')")" = "4"
+
+      - name: Stop Supabase
+        if: always()
+        run: supabase stop --no-backup

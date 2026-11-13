@@ -30,13 +30,7 @@ export const EditServer: FC = withSelectedServer(() => {
   return (
     <NoMenuLayout>
       <ServerForm
-        title={
-          <>
-            {'Edit "'}
-            {selectedServer.name}
-            {'”'}
-          </>
-        }
+        title={'Edit "{serverName}"'.replace('{serverName}', selectedServer.name)}
         initialValues={selectedServer}
         onSubmit={handleSubmit}
       >

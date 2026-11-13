@@ -1,0 +1,63 @@
+name: Release artifacts
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout verified revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            shlink-web-client/package-lock.json
+            fc/geo-enrich/package-lock.json
+
+      - name: Install build dependencies
+        run: |
+          npm ci --prefix shlink-web-client
+          npm ci --prefix fc/geo-enrich
+
+      - name: Build deployable packages
+        run: |
+          npm run build --prefix shlink-web-client
+          node scripts/build-geoip-bundle.mjs
+          node scripts/build-china-geo.mjs
+          node scripts/build-compat-function.mjs
+          node scripts/build-console-fc.mjs
+          node scripts/build-geo-enrich-fc.mjs
+          zip -q -j dist/redirect.zip \
+            fc/redirect/index.js fc/redirect/cache.js \
+            fc/redirect/ipmat.js fc/redirect/rules.js \
+            fc/redirect/rules-cache.js fc/redirect/china-geo.js \
+            fc/redirect/china-geo.bin
+
+      - name: Upload deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rxlink-${{ github.event.workflow_run.head_sha }}
+          if-no-files-found: error
+          path: |
+            supabase/functions/compat/dist/index.ts
+            dist/console.zip
+            dist/geo-enrich.zip
+            dist/redirect.zip

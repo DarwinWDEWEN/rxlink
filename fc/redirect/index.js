@@ -28,6 +28,8 @@ const RULES_SEQ_PATH = '/rest/v1/rpc/rules_seq';
 const RULES_SNAPSHOT_PATH = '/rest/v1/rpc/rules_snapshot';
 const CODE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const PORT = Number(process.env.FC_SERVER_PORT || 9000);
+const VISIT_MAX_ATTEMPTS = 3;
+const VISIT_RETRY_DELAY_MS = 50;
 
 // R8 追踪开关：默认值与 shlink 一致（全关），命中即不记访问或置空字段
 const TRACK = {
@@ -81,8 +83,26 @@ function clip(value, max) {
   return value === undefined || value === null ? null : String(value).slice(0, max);
 }
 
-function recordVisit(fields) {
-  gateway(INBOX_PATH, fields).catch(() => {});
+async function recordVisit(fields) {
+  let failureCode = 'network_error';
+
+  for (let attempt = 1; attempt <= VISIT_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const res = await gateway(INBOX_PATH, fields);
+      if (res.ok) return;
+      failureCode = `http_${res.status}`;
+    } catch {
+      failureCode = 'network_error';
+    }
+
+    if (attempt < VISIT_MAX_ATTEMPTS) {
+      await new Promise((resolveDelay) =>
+        setTimeout(resolveDelay, VISIT_RETRY_DELAY_MS * attempt)
+      );
+    }
+  }
+
+  console.error(`visit_enqueue_failed code=${failureCode}`);
 }
 
 async function readSeq() {

@@ -8,10 +8,20 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 
 const HOST = 'short.example';
-const state = { fallbacks: {}, inbox: [], failFallback: false, robotsCodes: ['crawl1', 'crawl2'], rulesSeq: 1, rules: [] };
+const state = {
+  fallbacks: {},
+  inbox: [],
+  inboxCalls: 0,
+  inboxFailuresRemaining: 0,
+  failFallback: false,
+  robotsCodes: ['crawl1', 'crawl2'],
+  rulesSeq: 1,
+  rules: [],
+};
 let mock;
 let child;
 let base;
+let childStderr = '';
 
 function json(res, obj, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -64,6 +74,11 @@ before(async () => {
       }]);
     }
     if (url === '/rest/v1/visit_inbox') {
+      state.inboxCalls += 1;
+      if (state.inboxFailuresRemaining > 0) {
+        state.inboxFailuresRemaining -= 1;
+        return json(res, { message: 'simulated outage' }, 500);
+      }
       state.inbox.push(body);
       res.writeHead(201);
       return res.end();
@@ -83,6 +98,9 @@ before(async () => {
       RULES_POLL_MS: '50',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stderr.on('data', (d) => {
+    childStderr += String(d);
   });
   base = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('redirect server startup timeout')), 8000);
@@ -166,6 +184,12 @@ async function waitOrphan(n = 1) {
     await new Promise((r) => setTimeout(r, 20));
   }
   return state.inbox;
+}
+
+async function waitFor(predicate) {
+  for (let i = 0; i < 100 && !predicate(); i++) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
 }
 
 test('命中短码仍 302 到长链（回归）', async () => {
@@ -317,6 +341,54 @@ test('remote_addr 长度截断（x-forwarded-for 可被伪造成任意长度）'
   await req('/known1', HOST, { 'x-forwarded-for': 'a'.repeat(300) });
   const inbox = await waitOrphan();
   assert.ok(inbox[0].remote_addr.length <= 64, `实际长度 ${inbox[0].remote_addr.length}`);
+});
+
+test('访问入队首次返回 500 时重试并最终写入', async () => {
+  state.inbox.length = 0;
+  state.inboxCalls = 0;
+  state.inboxFailuresRemaining = 1;
+
+  const res = await req('/known1');
+  assert.equal(res.status, 302);
+  await waitFor(() => state.inbox.length === 1);
+
+  assert.equal(state.inboxCalls, 2);
+  assert.equal(state.inbox.length, 1);
+});
+
+test('访问入队持续返回 500 时记录脱敏错误', async () => {
+  const stderrStart = childStderr.length;
+  state.inbox.length = 0;
+  state.inboxCalls = 0;
+  state.inboxFailuresRemaining = 10;
+
+  const res = await req('/known1', HOST, {
+    'x-forwarded-for': '203.0.113.200',
+    'user-agent': 'secret-agent-value',
+    referer: 'https://secret-referrer.example/path',
+  });
+  assert.equal(res.status, 302);
+  await waitFor(() => childStderr.slice(stderrStart).includes('visit_enqueue_failed'));
+
+  const errorOutput = childStderr.slice(stderrStart);
+  assert.match(errorOutput, /visit_enqueue_failed code=http_500/);
+  assert.doesNotMatch(errorOutput, /203\.0\.113\.200/);
+  assert.doesNotMatch(errorOutput, /secret-agent-value/);
+  assert.doesNotMatch(errorOutput, /secret-referrer/);
+  assert.doesNotMatch(errorOutput, /test-key/);
+  assert.equal(state.inbox.length, 0);
+  state.inboxFailuresRemaining = 0;
+});
+
+test('访问入队返回 201 时不重试', async () => {
+  state.inbox.length = 0;
+  state.inboxCalls = 0;
+  state.inboxFailuresRemaining = 0;
+
+  await req('/known1');
+  await waitFor(() => state.inbox.length === 1);
+
+  assert.equal(state.inboxCalls, 1);
 });
 
 // ---------------------------------------------------------------- R1 404 HTML

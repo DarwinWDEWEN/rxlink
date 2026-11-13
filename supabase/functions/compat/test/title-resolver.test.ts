@@ -192,7 +192,8 @@ Deno.test('SSRF：IP 字面量识别', () => {
 
 Deno.test('assertPublicHost：域名解析到公网 → 放行', async () => {
   const dns: ResolveDns = async () => ['93.184.216.34'];
-  await assertPublicHost('example.com', dns);
+  const addresses: unknown = await assertPublicHost('example.com', dns);
+  assertEquals(addresses, ['93.184.216.34']);
 });
 
 Deno.test('assertPublicHost：域名解析到内网 → 抛错', async () => {
@@ -264,6 +265,19 @@ function htmlResponse(body: string, headers: Record<string, string> = {}): Respo
 }
 
 const PUBLIC_DNS: ResolveDns = async () => ['93.184.216.34'];
+
+Deno.test('抓取：请求连接只能使用本轮已校验的 DNS 地址', async () => {
+  let connectedAddresses: unknown;
+  const title = await resolveTitle('https://example.com/a', {
+    fetchImpl: (async (...args: unknown[]) => {
+      connectedAddresses = args[2];
+      return htmlResponse('<title>Pinned</title>');
+    }) as typeof fetch,
+    resolveDns: async () => ['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'],
+  });
+  assertEquals(title, 'Pinned');
+  assertEquals(connectedAddresses, ['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946']);
+});
 
 Deno.test('抓取：正常页面取到标题', async () => {
   const title = await resolveTitle('https://example.com/a', {
@@ -343,6 +357,31 @@ Deno.test('抓取：跟随重定向到公网', async () => {
   });
   assertEquals(title, 'Redirected');
   assertEquals(calls.length, 2);
+});
+
+Deno.test('抓取：跟随重定向前取消上一跳响应流', async () => {
+  let cancelled = false;
+  let calls = 0;
+  const title = await resolveTitle('https://example.com/a', {
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(new ReadableStream({
+          cancel() {
+            cancelled = true;
+          },
+        }), {
+          status: 302,
+          headers: { location: 'https://example.com/b' },
+        });
+      }
+      return htmlResponse('<title>Redirected</title>');
+    },
+    resolveDns: PUBLIC_DNS,
+  });
+
+  assertEquals(title, 'Redirected');
+  assertEquals(cancelled, true);
 });
 
 Deno.test('抓取：重定向到内网 → 拒绝', async () => {

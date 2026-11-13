@@ -6,6 +6,9 @@
 //
 // 运行在 Supabase Edge Function（Deno）。纯函数无副作用，便于 deno test 直接覆盖。
 
+import http from 'node:http';
+import https from 'node:https';
+
 export const CHROME_USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 export const MAX_REDIRECTS = 15;
@@ -295,14 +298,14 @@ export async function defaultResolveDns(host: string): Promise<string[]> {
   return out;
 }
 
-export async function assertPublicHost(hostname: string, resolveDns: ResolveDns): Promise<void> {
+export async function assertPublicHost(hostname: string, resolveDns: ResolveDns): Promise<string[]> {
   const host = hostname.startsWith('[') && hostname.endsWith(']')
     ? hostname.slice(1, -1)
     : hostname;
   if (!host) throw new ResolveError('missing_host');
   if (isIpLiteral(host)) {
     if (isBlockedAddress(host)) throw new ResolveError('blocked_address');
-    return;
+    return [host];
   }
   const addresses = await resolveDns(host);
   if (!addresses.length) throw new ResolveError('dns_failed');
@@ -310,20 +313,80 @@ export async function assertPublicHost(hostname: string, resolveDns: ResolveDns)
   for (const addr of addresses) {
     if (isBlockedAddress(addr)) throw new ResolveError('blocked_address');
   }
+  return addresses;
 }
 
 // ---------------------------------------------------------------------------
 // 抓取主流程
 // ---------------------------------------------------------------------------
 
+export type TitleFetch = (
+  url: string,
+  init: RequestInit | undefined,
+  addresses: string[],
+) => Promise<Response>;
+
 export type TitleResolverDeps = {
-  fetchImpl?: typeof fetch;
+  fetchImpl?: TitleFetch;
   resolveDns?: ResolveDns;
   timeoutMs?: number;
   maxRedirects?: number;
   // 失败原因回调：只应收到「原因码 + host」，绝不能收到完整 URL
   log?: (message: string) => void;
 };
+
+function pinnedFetch(url: string, init: RequestInit | undefined, addresses: string[]): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const transport = target.protocol === 'https:' ? https : http;
+    const request = transport.request(target, {
+      method: init?.method ?? 'GET',
+      headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      lookup: (_hostname, options, callback) => {
+        const resolved = addresses.map((address) => ({
+          address,
+          family: address.includes(':') ? 6 as const : 4 as const,
+        }));
+        if (typeof options === 'object' && options.all) {
+          callback(null, resolved);
+        } else {
+          callback(null, resolved[0]!.address, resolved[0]!.family);
+        }
+      },
+    }, (incoming) => {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(incoming.headers)) {
+        if (Array.isArray(value)) {
+          for (const item of value) headers.append(name, item);
+        } else if (value !== undefined) {
+          headers.set(name, value);
+        }
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          incoming.on('data', (chunk: Uint8Array) => controller.enqueue(new Uint8Array(chunk)));
+          incoming.on('end', () => controller.close());
+          incoming.on('error', (err) => controller.error(err));
+        },
+        cancel() {
+          incoming.destroy();
+        },
+      });
+      resolve(new Response(body, {
+        status: incoming.statusCode ?? 500,
+        statusText: incoming.statusMessage,
+        headers,
+      }));
+    });
+    request.on('error', reject);
+    if (init?.signal) {
+      const abort = () => request.destroy(new DOMException('Aborted', 'AbortError'));
+      if (init.signal.aborted) abort();
+      else init.signal.addEventListener('abort', abort, { once: true });
+    }
+    request.end();
+  });
+}
 
 function parseTargetUrl(raw: string): URL {
   const url = new URL(raw);
@@ -403,7 +466,7 @@ async function readTitleFromResponse(res: Response): Promise<string> {
 }
 
 export async function resolveTitle(rawUrl: string, deps: TitleResolverDeps = {}): Promise<string | null> {
-  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = deps.fetchImpl ?? pinnedFetch;
   const resolveDns = deps.resolveDns ?? defaultResolveDns;
   const timeoutMs = deps.timeoutMs ?? FETCH_TIMEOUT_MS;
   const maxRedirects = deps.maxRedirects ?? MAX_REDIRECTS;
@@ -415,7 +478,7 @@ export async function resolveTitle(rawUrl: string, deps: TitleResolverDeps = {})
     let url = parseTargetUrl(rawUrl);
     for (let hop = 0; hop <= maxRedirects; hop++) {
       // 每一跳都要重新校验（含重定向目标）
-      await assertPublicHost(url.hostname, resolveDns);
+      const addresses = await assertPublicHost(url.hostname, resolveDns);
       const res = await fetchImpl(url.toString(), {
         method: 'GET',
         redirect: 'manual',
@@ -424,9 +487,10 @@ export async function resolveTitle(rawUrl: string, deps: TitleResolverDeps = {})
           'user-agent': CHROME_USER_AGENT,
           accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
         },
-      });
+      }, addresses);
       const location = res.headers.get('location');
       if (res.status >= 300 && res.status < 400 && location) {
+        await res.body?.cancel();
         if (hop === maxRedirects) throw new ResolveError('redirect_limit');
         url = parseTargetUrl(new URL(location, url).toString());
         continue;

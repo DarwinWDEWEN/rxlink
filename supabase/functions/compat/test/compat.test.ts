@@ -65,6 +65,9 @@ function reset(impl?: (fn: string, body: Record<string, unknown>) => RpcReply) {
   // R10：默认关掉自动解析，既有用例不受影响；R10 用例自己打开
   Deno.env.set('AUTO_RESOLVE_TITLES', 'false');
   externalImpl = () => Promise.reject(new Error('unexpected external request'));
+  delete titleResolverDeps.fetchImpl;
+  delete titleResolverDeps.resolveDns;
+  delete titleResolverDeps.log;
   rpcImpl = impl ??
     ((fn) => (fn === 'compat_auth' ? { ok: true, body: { id: 7, name: 'test-key' } } : { ok: true, body: null }));
 }
@@ -536,8 +539,9 @@ function htmlResponse(body: string, headers: Record<string, string> = {}): Respo
 
 // 把抓取依赖换掉：假 DNS + 假 fetch，绝不碰真网
 function setupTitleFetch(body: string, addresses: string[] = ['93.184.216.34']) {
-  titleResolverDeps.resolveDns = async () => addresses;
   externalImpl = async () => htmlResponse(body);
+  titleResolverDeps.resolveDns = async () => addresses;
+  titleResolverDeps.fetchImpl = (url, init) => externalImpl(url, init);
 }
 
 function createCall() {
@@ -596,6 +600,7 @@ Deno.test('R10：建链抓不到 → title 为空、来源 false、建链仍成�
   });
   Deno.env.delete('AUTO_RESOLVE_TITLES');
   externalImpl = async () => Promise.reject(new Error('network down'));
+  titleResolverDeps.fetchImpl = (url, init) => externalImpl(url, init);
 
   const res = await req('/short-urls', {
     method: 'POST',
@@ -677,6 +682,7 @@ Deno.test('R10：编辑抓不到 → p_auto_title 为 null', async () => {
   });
   Deno.env.delete('AUTO_RESOLVE_TITLES');
   externalImpl = async () => Promise.reject(new Error('network down'));
+  titleResolverDeps.fetchImpl = (url, init) => externalImpl(url, init);
 
   const res = await req('/short-urls/abc12', {
     method: 'PATCH',

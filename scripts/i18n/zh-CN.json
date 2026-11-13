@@ -100,7 +100,7 @@
   "Duplicated server": "重复的服务器",
   "Duplicated servers": "重复的服务器",
   "Edit ": "编辑 ",
-  "Edit \"": "编辑“",
+  "Edit \"{serverName}\"": "编辑“{serverName}”",
   "edit it": "编辑它",
   "Edit server": "编辑服务器",
   "Edit tag": "编辑标签",
