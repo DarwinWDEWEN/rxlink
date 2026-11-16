@@ -5,6 +5,8 @@
 //   只认 /rest/v3；鉴权只有 X-Api-Key（哈希后查 api_key）；错误体 RFC7807。
 // I8 扩展：R4 GET /short-urls/shorten、R7 GET /visits/export（rxlink 扩展端点）。
 // I10 扩展：标题自动解析（未填标题时抓目标页 <title>）。
+// I12 扩展：访问数据地区名汉化（国家按 code 翻中文，中国省份查内置表）。
+import { COUNTRY_ZH } from './country-zh.ts';
 import { resolveTitle, type TitleResolverDeps } from './title-resolver.ts';
 
 const SUPABASE_URL = (Deno.env.get('SUPABASE_URL') ?? Deno.env.get('SUPABASE_API_URL') ?? '')
@@ -410,14 +412,64 @@ function visitParams(url: URL): Json {
   };
 }
 
+// 中国省级行政区中文名：DB-IP City Lite 的 subdivision 只有英文名，查这张内置表补齐。
+const PROVINCE_ZH: Record<string, string> = {
+  Beijing: '北京',
+  Tianjin: '天津',
+  Shanghai: '上海',
+  Chongqing: '重庆',
+  Hebei: '河北',
+  Shanxi: '山西',
+  Liaoning: '辽宁',
+  Jilin: '吉林',
+  Heilongjiang: '黑龙江',
+  Jiangsu: '江苏',
+  Zhejiang: '浙江',
+  Anhui: '安徽',
+  Fujian: '福建',
+  Jiangxi: '江西',
+  Shandong: '山东',
+  Henan: '河南',
+  Hubei: '湖北',
+  Hunan: '湖南',
+  Guangdong: '广东',
+  Guangxi: '广西',
+  Hainan: '海南',
+  Sichuan: '四川',
+  Guizhou: '贵州',
+  Yunnan: '云南',
+  Tibet: '西藏',
+  Shaanxi: '陕西',
+  Gansu: '甘肃',
+  Qinghai: '青海',
+  Ningxia: '宁夏',
+  Xinjiang: '新疆',
+  'Inner Mongolia': '内蒙古',
+};
+
+// 地区名汉化（I12）：国家按 countryCode 翻中文；中国省份查内置表；其余（外国省份/城市）保持原样。
+function localizeVisitLocation(v: unknown): unknown {
+  if (v === null || typeof v !== 'object') return v;
+  const o = { ...(v as Json) };
+  const code = typeof o.countryCode === 'string' ? o.countryCode.toUpperCase() : '';
+  if (code && COUNTRY_ZH[code]) o.countryName = COUNTRY_ZH[code];
+  if (code === 'CN' && typeof o.regionName === 'string' && PROVINCE_ZH[o.regionName]) {
+    o.regionName = PROVINCE_ZH[o.regionName];
+  }
+  return o;
+}
+
 async function listVisits(scope: string, key: string | null, url: URL, extra?: Json): Promise<Json> {
-  const result = await rpc('list_visits', {
+  const result = (await rpc('list_visits', {
     p_scope: scope,
     p_key: key,
     p_domain: str(url.searchParams.get('domain')),
     ...visitParams(url),
     ...extra,
-  });
+  })) as { data?: Json[] } | null;
+  for (const visit of result?.data ?? []) {
+    visit.visitLocation = localizeVisitLocation(visit.visitLocation);
+  }
   return { visits: result };
 }
 

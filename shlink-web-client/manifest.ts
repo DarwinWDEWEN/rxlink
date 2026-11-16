@@ -32,8 +32,8 @@ const iconSizes = [
 ];
 
 export const manifest: Partial<ManifestOptions> = {
-  short_name: 'Shlink',
-  name: 'Shlink Web Client',
+  short_name: 'rxlink 短链系统',
+  name: 'rxlink 短链系统',
   start_url: '/',
   display: 'standalone',
   theme_color: BRAND_COLOR_LM, // Toolbar color

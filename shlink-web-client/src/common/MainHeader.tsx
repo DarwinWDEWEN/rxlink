@@ -16,14 +16,15 @@ export const MainHeader: FC = () => {
       className="[&]:fixed top-0 z-900"
       brand={
         <Link to="/" className="[&]:text-white no-underline flex items-center gap-2">
-          <ShlinkLogo className="w-7" color="white" /> <small className="font-normal">Shlink</small>
+          <ShlinkLogo className="w-7" color="white" />{' '}
+          <small className="font-normal">rxlink 短链系统</small>
         </Link>
       }
     >
       <NavBar.MenuItem
         to={settingsPath}
         active={pathname.startsWith(settingsPath)}
-        className="flex items-center gap-1.5"
+        className="flex items-center gap-1.5 whitespace-nowrap"
       >
         <FontAwesomeIcon icon={cogsIcon} /> {'Settings'}
       </NavBar.MenuItem>

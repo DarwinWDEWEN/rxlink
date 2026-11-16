@@ -94,6 +94,20 @@ describe('replaceLiterals', () => {
     assert.equal(code, `const title = '编辑“{serverName}”';`);
     assert.deepEqual(counts, { 'Edit "{serverName}"': 1 });
   });
+
+  it('键含非 ASCII 时匹配源码里的转义形态（\\xNN）', () => {
+    const dict = { 'When the\xa0': '当' };
+    const { code, counts } = replaceLiterals('"When the\\xA0"', dict);
+    assert.equal(code, '"当"');
+    assert.deepEqual(counts, { 'When the\xa0': 1 });
+  });
+
+  it('键含非 ASCII 时同时匹配字面量与转义两种形态', () => {
+    const dict = { 'a\xa0b': 'X' };
+    const { code, counts } = replaceLiterals('"a\\xA0b" + "a\xa0b"', dict);
+    assert.equal(code, '"X" + "X"');
+    assert.deepEqual(counts, { 'a\xa0b': 2 });
+  });
 });
 
 describe('i18nPlugin', () => {

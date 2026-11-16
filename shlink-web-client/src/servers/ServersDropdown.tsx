@@ -14,7 +14,7 @@ export const ServersDropdown: FC = () => {
   return (
     <NavBar.Dropdown
       buttonContent={
-        <span className="flex items-center gap-1.5">
+        <span className="flex items-center gap-1.5 whitespace-nowrap">
           <FontAwesomeIcon icon={serverIcon} /> {'Servers'}
         </span>
       }
