@@ -17,5 +17,7 @@ codegraph.db
 design/
 # shlink 上游源码本地参考副本：历史重写已彻底移除，工作区保留仅供对照（MIT，见上游）
 shlink/
+# Supabase CLI 本地运行状态（启动/停止时生成）
+supabase/.temp/
 # 线上数据归档（如 visit_bak_0012 的还原脚本）：含访客 IP/UA 派生数据，不入库
 .backups/

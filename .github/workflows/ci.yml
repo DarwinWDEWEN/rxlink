@@ -35,6 +35,10 @@ jobs:
         run: npm ci
         working-directory: shlink-web-client
 
+      - name: Install geo-enrich dependencies
+        run: npm ci
+        working-directory: fc/geo-enrich
+
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
         working-directory: shlink-web-client
@@ -89,11 +93,14 @@ jobs:
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # Pin the CLI version: resolving `latest` calls the GitHub API and fails when rate-limited.
+          version: 3.2.0
 
       - name: Replay migrations from an empty database
         run: |
-          supabase start
+          # Only Postgres is required to replay migrations. Excluding every other service keeps the
+          # runner from pulling ~5GB of images (studio/kong/gotrue/...) and shortens CI considerably.
+          supabase start --exclude gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
           supabase db reset
 
       - name: Verify production baseline
