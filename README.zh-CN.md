@@ -4,9 +4,9 @@
 
 rxlink 是一个**兼容 shlink REST 契约**（`/rest/v3/*`）的短链平台：在 serverless 设施上重新实现数据面与跳转层，并直接复用 shlink 官方网页控制台（[shlink-web-client v4.9.0](https://github.com/shlinkio/shlink-web-client)）作为后台。重点不是把上游 shlink 原版搬上云，而是按 shlink 的 API 契约自研实现，让官方控制台开箱即用。
 
-- 控制台：<https://console.example.com>
-- 短链域名：`https://example.com/{code}`
-- 兼容层：`…/functions/v1/compat/rest/v3/*`
+- 控制台：自行部署的 shlink 网页控制台（见[自行部署](#自行部署私有化)）
+- 短链域名：`https://<你的短链域名>/{code}`
+- 兼容层：`https://<你的 Supabase 项目>/functions/v1/compat/rest/v3/*`
 
 > **项目状态**：功能已完整覆盖 shlink 契约（24 个 REST 动作 23 ✅ / 1 ⚠️ 降级 / 0 ❌），但**尚未正式发布**——Supabase 免费版 1C2G 不能用于生产流量，需付费版。详见[状态与发布前置](#状态与发布前置)。
 
@@ -63,21 +63,21 @@ FC 地理富化函数（每小时）→ 查 DB-IP → 回写国家/城市/经纬
 | `shlink-web-client/` | **vendored 上游** shlink-web-client v4.9.0（MIT），含我们的中文化改动 |
 | `docs/` | 手册、运维、设计文档 |
 
-## 快速开始（托管实例）
+## 快速开始
 
-1. 生成 API 密钥（明文只打印一次，库里只存 sha256）：
+1. 在你的部署上生成 API 密钥（明文只打印一次，库里只存 sha256）：
 
    ```bash
    nvm use 24
    bash scripts/new-api-key.sh <name>            # 可选过期时间：--expires-at 2027-01-01T00:00:00Z
    ```
 
-2. 打开 <https://console.example.com>，添加服务器：
+2. 打开你的控制台，添加服务器：
 
    | 字段 | 填什么 |
    |---|---|
    | 名称 | 任意显示名 |
-   | URL | `https://<你的项目>.supabase.co/functions/v1/compat` |
+   | URL | `https://<你的 Supabase 项目>/functions/v1/compat` |
    | API 密钥 | 第 1 步得到的 `rxl_…` 明文 |
 
 3. 验证兼容层健康：`…/functions/v1/compat/rest/v3/health` 应返回 `{"status":"pass","version":"5.1.0"}`。
@@ -133,7 +133,7 @@ CI（`.github/workflows/ci.yml`）两个 job：
 ## 状态与发布前置
 
 - **shlink REST 契约**：24 个动作中 **23 ✅ / 1 ⚠️**（`mercureInfo` 404 降级）/ **0 ❌**；服务端还有 `/{code}` 跳转、`/{code}/track` 追踪像素、`robots.txt`。详见 [docs/shlink-feature-checklist.md](docs/shlink-feature-checklist.md)。
-- **发布阻塞项**：🔴 Supabase 升付费版（唯一真正阻塞项）；🟠 确认 FC 定时触发器 cron 是 6 字段；🟡 `cdn.example.com` 域名下线。完整清单见 [docs/release-checklist.md](docs/release-checklist.md)。
+- **发布阻塞项**：🔴 生产使用需付费版 Supabase（唯一真正阻塞项）；🟠 确认 FC 定时触发器 cron 是 6 字段。完整清单见 [docs/release-checklist.md](docs/release-checklist.md)。
 
 ## 运维
 

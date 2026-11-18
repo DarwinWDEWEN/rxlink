@@ -4,9 +4,9 @@
 
 rxlink is a short-link platform that reimplements the **shlink REST contract** (`/rest/v3/*`) on serverless infrastructure, and drives the official shlink web console ([shlink-web-client v4.9.0](https://github.com/shlinkio/shlink-web-client)) as its admin UI. The point is not to run upstream shlink in the cloud — it is a ground-up implementation of the data plane and redirect path behind the shlink API.
 
-- Console: <https://console.example.com>
-- Short-link domain: `https://example.com/{code}`
-- Compatibility layer: `…/functions/v1/compat/rest/v3/*`
+- Console: the shlink web console you deploy yourself (see [Self-hosting](#self-hosting-private-deployment))
+- Short-link domain: `https://<your-short-link-domain>/{code}`
+- Compatibility layer: `https://<your-supabase-project>/functions/v1/compat/rest/v3/*`
 
 > **Project status** — feature-complete against the shlink contract (23 / 24 REST actions ✅, 1 ⚠️ degraded, 0 ❌), but **not yet in production**: the Supabase free tier (1C2G) cannot be used for production traffic; a paid plan is required. See [Status & release blockers](#status--release-blockers).
 
@@ -63,21 +63,21 @@ The split is deliberate: redirect is a hot path that must answer in milliseconds
 | `shlink-web-client/` | Vendored upstream shlink-web-client v4.9.0 (MIT), including our zh-CN i18n changes |
 | `docs/` | Manual, runbook, design notes |
 
-## Quick start (hosted instance)
+## Quick start
 
-1. Generate an API key (plaintext printed once; only its sha256 is stored):
+1. Generate an API key on your deployment (plaintext printed once; only its sha256 is stored):
 
    ```bash
    nvm use 24
    bash scripts/new-api-key.sh <name>            # optional: --expires-at 2027-01-01T00:00:00Z
    ```
 
-2. Open <https://console.example.com>, add a server:
+2. Open your console and add a server:
 
    | Field | Value |
    |---|---|
    | Name | any display name |
-   | URL | `https://<your-project>.supabase.co/functions/v1/compat` |
+   | URL | `https://<your-supabase-project>/functions/v1/compat` |
    | API key | the `rxl_…` plaintext from step 1 |
 
 3. Verify the compat layer: `…/functions/v1/compat/rest/v3/health` should return `{"status":"pass","version":"5.1.0"}`.
@@ -133,7 +133,7 @@ CI (`.github/workflows/ci.yml`) runs two jobs:
 ## Status & release blockers
 
 - **shlink REST contract**: 23 / 24 actions ✅, 1 ⚠️ (`mercureInfo` degrades to 404), 0 ❌. The server side also implements `/{code}` redirect, `/{code}/track` pixel, and `robots.txt`. Details in [docs/shlink-feature-checklist.md](docs/shlink-feature-checklist.md).
-- **Blocking**: 🔴 upgrade Supabase to a paid plan (the only real blocker); 🟠 confirm FC scheduled-trigger cron uses 6 fields; 🟡 retire the `cdn.example.com` domain. Full list in [docs/release-checklist.md](docs/release-checklist.md).
+- **Blocking**: 🔴 production use requires a paid Supabase plan (the only real blocker); 🟠 confirm FC scheduled-trigger cron uses 6 fields. Full list in [docs/release-checklist.md](docs/release-checklist.md).
 
 ## Operations
 
