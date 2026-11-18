@@ -61,7 +61,7 @@ The split is deliberate: redirect is a hot path that must answer in milliseconds
 | `supabase/migrations/` | Database migrations (0001–0021) |
 | `scripts/` | Build / deploy / i18n / ops scripts |
 | `shlink-web-client/` | Vendored upstream shlink-web-client v4.9.0 (MIT), including our zh-CN i18n changes |
-| `docs/` | Manual, runbook, design notes |
+| `docs/` | Runbook, design and verification notes |
 
 ## Quick start
 

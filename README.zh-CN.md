@@ -1,4 +1,4 @@
-# rxlink · rxlink 短链系统
+# rxlink 短链系统
 
 [English](README.md) · [中文](README.zh-CN.md)
 
@@ -61,7 +61,7 @@ FC 地理富化函数（每小时）→ 查 DB-IP → 回写国家/城市/经纬
 | `supabase/migrations/` | 数据库迁移（0001–0021） |
 | `scripts/` | 构建 / 部署 / i18n / 运维脚本 |
 | `shlink-web-client/` | **vendored 上游** shlink-web-client v4.9.0（MIT），含我们的中文化改动 |
-| `docs/` | 手册、运维、设计文档 |
+| `docs/` | 运维、设计、验收文档 |
 
 ## 快速开始
 
